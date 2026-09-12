@@ -14,11 +14,13 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
             sshpass \
             cmake \
             libxml2-dev \
             libpng-dev \
+            libboost-all-dev \
             g++ \
             git \
             patch
