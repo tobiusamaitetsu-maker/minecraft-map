@@ -103,13 +103,42 @@ jobs:
             bedrock-viz
 
       # ----------------------------------------
-      # 7. bedrock-vizをビルド
+      # 7. bedrock-vizのLevelDBを修正
       # ----------------------------------------
-      - name: Build bedrock-viz
+      - name: Fix LevelDB build
         run: |
           cd bedrock-viz
 
           patch -p0 < patches/leveldb-1.22.patch
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "third_party/leveldb/table/compressor/zlib_compressor.cc"
+          )
+
+          text = path.read_text()
+
+          if "#include <cstdint>" not in text:
+              text = text.replace(
+                  "#include <zlib.h>",
+                  "#include <zlib.h>\n#include <cstdint>"
+              )
+
+              path.write_text(text)
+
+              print("Added <cstdint> to zlib_compressor.cc")
+          else:
+              print("<cstdint> is already present")
+          PY
+
+      # ----------------------------------------
+      # 8. bedrock-vizをビルド
+      # ----------------------------------------
+      - name: Build bedrock-viz
+        run: |
+          cd bedrock-viz
 
           mkdir -p build
           cd build
@@ -119,10 +148,10 @@ jobs:
           cmake --build . --parallel
 
           echo "=== built files ==="
-          find . -maxdepth 2 -type f -name "bedrock-viz" -print
+          find . -maxdepth 3 -type f -name "bedrock-viz" -print
 
       # ----------------------------------------
-      # 8. bedrock-vizでWeb地図を生成
+      # 9. bedrock-vizでWeb地図を生成
       # ----------------------------------------
       - name: Generate map
         run: |
@@ -142,7 +171,7 @@ jobs:
             --html-most
 
       # ----------------------------------------
-      # 9. 生成結果を確認
+      # 10. 生成結果を確認
       # ----------------------------------------
       - name: Check generated map
         run: |
@@ -153,7 +182,7 @@ jobs:
           find map -type f -name "*.html" -print
 
       # ----------------------------------------
-      # 10. Artifactとして保存
+      # 11. Artifactとして保存
       # ----------------------------------------
       - name: Upload map artifact
         uses: actions/upload-artifact@v4
