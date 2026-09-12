@@ -13,25 +13,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sshpass
 
-      - name: Download level.dat
+      - name: Inspect world path
         env:
           SSHPASS: ${{ secrets.RINGO_SFTP_PASSWORD }}
           SFTP_HOST: ${{ secrets.RINGO_SFTP_HOST }}
           SFTP_PORT: ${{ secrets.RINGO_SFTP_PORT }}
           SFTP_USER: ${{ secrets.RINGO_SFTP_USER }}
         run: |
-          mkdir -p world/level
-
           printf '%s\n' \
-            'get /world/level/level.dat world/level/level.dat' \
+            'pwd' \
+            'ls -la /world' \
+            'ls -la /world/level' \
+            'ls -la /world/level/db' \
             'bye' \
           | sshpass -e sftp \
               -o StrictHostKeyChecking=no \
               -P "$SFTP_PORT" \
               "$SFTP_USER@$SFTP_HOST"
-
-      - name: Check level.dat
-        run: |
-          echo "=== level.dat ==="
-          ls -lh world/level/level.dat
-          file world/level/level.dat
