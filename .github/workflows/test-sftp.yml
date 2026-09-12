@@ -8,39 +8,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Install sshpass
         run: |
           sudo apt-get update
           sudo apt-get install -y sshpass
 
-      - name: Download Minecraft world
+      - name: Check SFTP
         env:
           SSHPASS: ${{ secrets.RINGO_SFTP_PASSWORD }}
           SFTP_HOST: ${{ secrets.RINGO_SFTP_HOST }}
           SFTP_PORT: ${{ secrets.RINGO_SFTP_PORT }}
           SFTP_USER: ${{ secrets.RINGO_SFTP_USER }}
         run: |
-          mkdir -p world/level
-
           printf '%s\n' \
-            'get -r /world/level/db world/level/' \
-            'get /world/level/level.dat world/level/level.dat' \
+            'pwd' \
+            'ls -la' \
+            'ls -la /world' \
+            'ls -la /world/level' \
             'bye' \
           | sshpass -e sftp \
               -o StrictHostKeyChecking=no \
               -P "$SFTP_PORT" \
               "$SFTP_USER@$SFTP_HOST"
-
-      - name: Check downloaded world
-        run: |
-          echo "=== level.dat ==="
-          ls -lh world/level/level.dat
-
-          echo "=== db ==="
-          du -sh world/level/db
-
-          echo "=== files ==="
-          find world/level -maxdepth 2 -type f | head -50
