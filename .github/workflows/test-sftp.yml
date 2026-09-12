@@ -1,18 +1,31 @@
-name: Test RingoNetworks SFTP
+name: Generate Bedrock Map
 
 on:
   workflow_dispatch:
 
 jobs:
-  test-sftp:
+  generate-map:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install sshpass
+      # ----------------------------------------
+      # 1. 必要なツールをインストール
+      # ----------------------------------------
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y sshpass
+          sudo apt-get install -y \
+            sshpass \
+            cmake \
+            libxml2-dev \
+            libpng-dev \
+            g++ \
+            git \
+            patch
 
+      # ----------------------------------------
+      # 2. RingoNetworksからワールドアーカイブを取得
+      # ----------------------------------------
       - name: Download world archive
         env:
           SSHPASS: ${{ secrets.RINGO_SFTP_PASSWORD }}
@@ -30,6 +43,9 @@ jobs:
               -P "$SFTP_PORT" \
               "$SFTP_USER@$SFTP_HOST"
 
+      # ----------------------------------------
+      # 3. アーカイブを確認
+      # ----------------------------------------
       - name: Check downloaded archive
         run: |
           echo "=== archive ==="
@@ -38,19 +54,109 @@ jobs:
           echo "=== archive type ==="
           file world/archive.tar.gz
 
+      # ----------------------------------------
+      # 4. ワールドを展開
+      # ----------------------------------------
       - name: Extract world
         run: |
           mkdir -p extracted
 
           tar -xzf world/archive.tar.gz -C extracted
 
-      - name: Check extracted files
+      # ----------------------------------------
+      # 5. level.dat / db を確認
+      # ----------------------------------------
+      - name: Validate world
         run: |
-          echo "=== extracted files ==="
-          find extracted -maxdepth 3 -type f | head -100
-
           echo "=== level.dat ==="
           find extracted -name level.dat -type f -print
 
-          echo "=== db directory ==="
+          echo "=== db ==="
           find extracted -type d -name db -print
+
+          LEVEL_DAT=$(find extracted -name level.dat -type f | head -1)
+
+          if [ -z "$LEVEL_DAT" ]; then
+            echo "ERROR: level.dat was not found."
+            exit 1
+          fi
+
+          WORLD_DIR=$(dirname "$LEVEL_DAT")
+
+          echo "World directory:"
+          echo "$WORLD_DIR"
+
+          if [ ! -d "$WORLD_DIR/db" ]; then
+            echo "ERROR: db directory was not found."
+            exit 1
+          fi
+
+      # ----------------------------------------
+      # 6. bedrock-vizを取得
+      # ----------------------------------------
+      - name: Checkout bedrock-viz
+        run: |
+          git clone --recursive \
+            https://github.com/paulgrahek/bedrock-viz.git \
+            bedrock-viz
+
+      # ----------------------------------------
+      # 7. bedrock-vizをビルド
+      # ----------------------------------------
+      - name: Build bedrock-viz
+        run: |
+          cd bedrock-viz
+
+          patch -p0 < patches/leveldb-1.22.patch
+
+          mkdir -p build
+          cd build
+
+          cmake ..
+
+          cmake --build . --parallel
+
+          echo "=== built files ==="
+          find . -maxdepth 2 -type f -name "bedrock-viz" -print
+
+      # ----------------------------------------
+      # 8. bedrock-vizでWeb地図を生成
+      # ----------------------------------------
+      - name: Generate map
+        run: |
+          LEVEL_DAT=$(find extracted -name level.dat -type f | head -1)
+          WORLD_DIR=$(dirname "$LEVEL_DAT")
+
+          mkdir -p map
+
+          echo "=== World directory ==="
+          echo "$WORLD_DIR"
+
+          echo "=== Running bedrock-viz ==="
+
+          ./bedrock-viz/build/bedrock-viz \
+            --db "$WORLD_DIR" \
+            --out map/out1 \
+            --html-most
+
+      # ----------------------------------------
+      # 9. 生成結果を確認
+      # ----------------------------------------
+      - name: Check generated map
+        run: |
+          echo "=== generated map ==="
+          find map -maxdepth 2 -type f | head -100
+
+          echo "=== HTML files ==="
+          find map -type f -name "*.html" -print
+
+      # ----------------------------------------
+      # 10. Artifactとして保存
+      # ----------------------------------------
+      - name: Upload map artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bedrock-viz-map
+          path: map/
+          if-no-files-found: error
+          retention-days: 7
