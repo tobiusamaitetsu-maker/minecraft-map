@@ -66,7 +66,7 @@ jobs:
           tar -xzf world/archive.tar.gz -C extracted
 
       # ----------------------------------------
-      # 5. level.dat / db を確認
+      # 5. level.dat / dbを確認
       # ----------------------------------------
       - name: Validate world
         run: |
@@ -134,22 +134,112 @@ jobs:
           PY
 
       # ----------------------------------------
-      # 8. CMakeを設定
+      # 8. CMakeLists.txtにC++17を明示的に強制
+      # ----------------------------------------
+      - name: Force C++17
+        run: |
+          cd bedrock-viz
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("CMakeLists.txt")
+          text = path.read_text()
+
+          marker = "add_library(${LIB_NAME} STATIC ${SRC_FILES})"
+
+          if marker not in text:
+              raise SystemExit(
+                  "ERROR: Could not find libbedrock-viz target definition."
+              )
+
+          replacement = """add_library(${LIB_NAME} STATIC ${SRC_FILES})
+
+          set_target_properties(${LIB_NAME} PROPERTIES
+            CXX_STANDARD 17
+            CXX_STANDARD_REQUIRED ON
+            CXX_EXTENSIONS OFF
+          )
+
+          target_compile_features(${LIB_NAME} PUBLIC cxx_std_17)
+          """
+
+          if "target_compile_features(${LIB_NAME} PUBLIC cxx_std_17)" not in text:
+              text = text.replace(marker, replacement)
+
+          exe_marker = "add_executable(${BIN_NAME} src/main.cc)"
+
+          if exe_marker not in text:
+              raise SystemExit(
+                  "ERROR: Could not find bedrock-viz executable target."
+              )
+
+          exe_replacement = """add_executable(${BIN_NAME} src/main.cc)
+
+          set_target_properties(${BIN_NAME} PROPERTIES
+            CXX_STANDARD 17
+            CXX_STANDARD_REQUIRED ON
+            CXX_EXTENSIONS OFF
+          )
+
+          target_compile_features(${BIN_NAME} PRIVATE cxx_std_17)
+          """
+
+          if "target_compile_features(${BIN_NAME} PRIVATE cxx_std_17)" not in text:
+              text = text.replace(exe_marker, exe_replacement)
+
+          path.write_text(text)
+
+          print("C++17 has been explicitly forced for bedrock-viz targets.")
+          PY
+
+          echo "=== CMakeLists.txt C++ settings ==="
+          grep -n -A8 -B2 \
+            "target_compile_features" \
+            CMakeLists.txt
+
+      # ----------------------------------------
+      # 9. CMakeを設定
       # ----------------------------------------
       - name: Configure CMake
         run: |
           cd bedrock-viz
 
-          mkdir -p build
+          rm -rf build
+          mkdir build
           cd build
 
           cmake .. \
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
-            -DCMAKE_CXX_EXTENSIONS=OFF
+            -DCMAKE_CXX_EXTENSIONS=OFF \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       # ----------------------------------------
-      # 9. bedrock-vizをビルド
+      # 10. C++標準が正しく設定されたか確認
+      # ----------------------------------------
+      - name: Check C++ standard
+        run: |
+          cd bedrock-viz/build
+
+          echo "=== CMake CXX standard ==="
+          grep -E \
+            "CMAKE_CXX_STANDARD:|CMAKE_CXX_COMPILER:" \
+            CMakeCache.txt || true
+
+          echo "=== compile commands ==="
+
+          if [ -f compile_commands.json ]; then
+            grep -o -- "-std=[^\" ]*" compile_commands.json \
+              | sort \
+              | uniq -c \
+              | head -20
+          else
+            echo "compile_commands.json was not generated."
+          fi
+
+      # ----------------------------------------
+      # 11. bedrock-vizをビルド
       # ----------------------------------------
       - name: Build bedrock-viz
         run: |
@@ -161,7 +251,7 @@ jobs:
           find . -maxdepth 3 -type f -name "bedrock-viz" -print
 
       # ----------------------------------------
-      # 10. bedrock-vizでWeb地図を生成
+      # 12. bedrock-vizでWeb地図を生成
       # ----------------------------------------
       - name: Generate map
         run: |
@@ -181,7 +271,7 @@ jobs:
             --html-most
 
       # ----------------------------------------
-      # 11. 生成結果を確認
+      # 13. 生成結果を確認
       # ----------------------------------------
       - name: Check generated map
         run: |
@@ -192,7 +282,7 @@ jobs:
           find map -type f -name "*.html" -print
 
       # ----------------------------------------
-      # 12. Artifactとして保存
+      # 14. Artifactとして保存
       # ----------------------------------------
       - name: Upload map artifact
         uses: actions/upload-artifact@v4
