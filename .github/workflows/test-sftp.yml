@@ -26,7 +26,30 @@ jobs:
             patch
 
       # ----------------------------------------
-      # 2. RingoNetworksからワールドアーカイブを取得
+      # 2. コンパイラを確認
+      # ----------------------------------------
+      - name: Check compiler
+        run: |
+          echo "=== GCC ==="
+          gcc --version
+
+          echo "=== G++ ==="
+          g++ --version
+
+          echo "=== CMake ==="
+          cmake --version
+
+      # ----------------------------------------
+      # 3. C++17を強制
+      # ----------------------------------------
+      - name: Set C++17 environment
+        run: |
+          echo "CXX=g++" >> "$GITHUB_ENV"
+          echo "CC=gcc" >> "$GITHUB_ENV"
+          echo 'CXXFLAGS=-std=c++17' >> "$GITHUB_ENV"
+
+      # ----------------------------------------
+      # 4. RingoNetworksからワールドアーカイブを取得
       # ----------------------------------------
       - name: Download world archive
         env:
@@ -46,7 +69,7 @@ jobs:
               "$SFTP_USER@$SFTP_HOST"
 
       # ----------------------------------------
-      # 3. アーカイブを確認
+      # 5. アーカイブを確認
       # ----------------------------------------
       - name: Check downloaded archive
         run: |
@@ -57,7 +80,7 @@ jobs:
           file world/archive.tar.gz
 
       # ----------------------------------------
-      # 4. ワールドを展開
+      # 6. ワールドを展開
       # ----------------------------------------
       - name: Extract world
         run: |
@@ -66,7 +89,7 @@ jobs:
           tar -xzf world/archive.tar.gz -C extracted
 
       # ----------------------------------------
-      # 5. level.dat / dbを確認
+      # 7. level.dat / dbを確認
       # ----------------------------------------
       - name: Validate world
         run: |
@@ -94,7 +117,7 @@ jobs:
           fi
 
       # ----------------------------------------
-      # 6. bedrock-vizを取得
+      # 8. bedrock-vizを取得
       # ----------------------------------------
       - name: Checkout bedrock-viz
         run: |
@@ -103,7 +126,7 @@ jobs:
             bedrock-viz
 
       # ----------------------------------------
-      # 7. bedrock-vizのLevelDBを修正
+      # 9. LevelDBパッチ
       # ----------------------------------------
       - name: Fix LevelDB build
         run: |
@@ -134,9 +157,70 @@ jobs:
           PY
 
       # ----------------------------------------
-      # 8. CMakeLists.txtにC++17を明示的に強制
+      # 10. filesystemヘッダーを確認
       # ----------------------------------------
-      - name: Force C++17
+      - name: Check filesystem headers
+        run: |
+          cd bedrock-viz
+
+          echo "=== logger.h ==="
+          sed -n '1,40p' include/logger.h
+
+          echo "=== asset.h ==="
+          cat include/asset.h
+
+      # ----------------------------------------
+      # 11. 必要なfilesystem includeを補正
+      # ----------------------------------------
+      - name: Fix filesystem includes
+        run: |
+          cd bedrock-viz
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          files = [
+              Path("include/logger.h"),
+              Path("include/asset.h"),
+          ]
+
+          for path in files:
+              text = path.read_text()
+
+              if "#include <filesystem>" not in text:
+                  lines = text.splitlines()
+
+                  insert_index = 0
+
+                  while (
+                      insert_index < len(lines)
+                      and lines[insert_index].startswith("#")
+                  ):
+                      if lines[insert_index].startswith("#pragma once"):
+                          insert_index += 1
+                          continue
+
+                      break
+
+                  lines.insert(insert_index, "#include <filesystem>")
+
+                  path.write_text("\n".join(lines) + "\n")
+
+                  print(f"Added <filesystem> to {path}")
+              else:
+                  print(f"<filesystem> already exists in {path}")
+          PY
+
+          echo "=== logger.h after fix ==="
+          sed -n '1,15p' include/logger.h
+
+          echo "=== asset.h after fix ==="
+          sed -n '1,15p' include/asset.h
+
+      # ----------------------------------------
+      # 12. CMakeLists.txtにC++17を明示
+      # ----------------------------------------
+      - name: Force C++17 in CMakeLists
         run: |
           cd bedrock-viz
 
@@ -146,14 +230,32 @@ jobs:
           path = Path("CMakeLists.txt")
           text = path.read_text()
 
-          marker = "add_library(${LIB_NAME} STATIC ${SRC_FILES})"
+          if "set(CMAKE_CXX_STANDARD 17)" not in text:
+              marker = "project(bedrock-viz VERSION 0.1.2)"
 
-          if marker not in text:
-              raise SystemExit(
-                  "ERROR: Could not find libbedrock-viz target definition."
+              if marker not in text:
+                  raise SystemExit(
+                      "ERROR: CMake project declaration was not found."
+                  )
+
+              text = text.replace(
+                  marker,
+                  marker
+                  + "\n\n"
+                  + "set(CMAKE_CXX_STANDARD 17)\n"
+                  + "set(CMAKE_CXX_STANDARD_REQUIRED ON)\n"
+                  + "set(CMAKE_CXX_EXTENSIONS OFF)"
               )
 
-          replacement = """add_library(${LIB_NAME} STATIC ${SRC_FILES})
+          if "CXX_STANDARD 17" not in text:
+              marker = "add_library(${LIB_NAME} STATIC ${SRC_FILES})"
+
+              if marker not in text:
+                  raise SystemExit(
+                      "ERROR: libbedrock-viz target was not found."
+                  )
+
+              replacement = """add_library(${LIB_NAME} STATIC ${SRC_FILES})
 
           set_target_properties(${LIB_NAME} PROPERTIES
             CXX_STANDARD 17
@@ -164,17 +266,13 @@ jobs:
           target_compile_features(${LIB_NAME} PUBLIC cxx_std_17)
           """
 
-          if "target_compile_features(${LIB_NAME} PUBLIC cxx_std_17)" not in text:
               text = text.replace(marker, replacement)
 
-          exe_marker = "add_executable(${BIN_NAME} src/main.cc)"
+          if "target_compile_features(${BIN_NAME} PRIVATE cxx_std_17)" not in text:
+              marker = "add_executable(${BIN_NAME} src/main.cc)"
 
-          if exe_marker not in text:
-              raise SystemExit(
-                  "ERROR: Could not find bedrock-viz executable target."
-              )
-
-          exe_replacement = """add_executable(${BIN_NAME} src/main.cc)
+              if marker in text:
+                  replacement = """add_executable(${BIN_NAME} src/main.cc)
 
           set_target_properties(${BIN_NAME} PROPERTIES
             CXX_STANDARD 17
@@ -185,61 +283,80 @@ jobs:
           target_compile_features(${BIN_NAME} PRIVATE cxx_std_17)
           """
 
-          if "target_compile_features(${BIN_NAME} PRIVATE cxx_std_17)" not in text:
-              text = text.replace(exe_marker, exe_replacement)
+                  text = text.replace(marker, replacement)
 
           path.write_text(text)
 
-          print("C++17 has been explicitly forced for bedrock-viz targets.")
+          print("C++17 configuration applied.")
           PY
 
-          echo "=== CMakeLists.txt C++ settings ==="
-          grep -n -A8 -B2 \
-            "target_compile_features" \
+          echo "=== CMakeLists C++ configuration ==="
+          grep -n -A8 -B3 \
+            "CXX_STANDARD\|target_compile_features" \
             CMakeLists.txt
 
       # ----------------------------------------
-      # 9. CMakeを設定
+      # 13. CMakeを完全に再構築
       # ----------------------------------------
       - name: Configure CMake
         run: |
           cd bedrock-viz
 
           rm -rf build
+
           mkdir build
           cd build
 
           cmake .. \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_CXX_COMPILER=g++ \
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
             -DCMAKE_CXX_EXTENSIONS=OFF \
+            -DCMAKE_CXX_FLAGS="-std=c++17" \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       # ----------------------------------------
-      # 10. C++標準が正しく設定されたか確認
+      # 14. 実際のコンパイルフラグを確認
       # ----------------------------------------
-      - name: Check C++ standard
+      - name: Verify C++17 compile flags
         run: |
           cd bedrock-viz/build
 
-          echo "=== CMake CXX standard ==="
+          echo "=== CMake compiler ==="
           grep -E \
-            "CMAKE_CXX_STANDARD:|CMAKE_CXX_COMPILER:" \
+            "CMAKE_C_COMPILER:|CMAKE_CXX_COMPILER:" \
             CMakeCache.txt || true
 
-          echo "=== compile commands ==="
+          echo "=== CMake C++ standard ==="
+          grep -E \
+            "CMAKE_CXX_STANDARD:|CMAKE_CXX_FLAGS:" \
+            CMakeCache.txt || true
 
-          if [ -f compile_commands.json ]; then
-            grep -o -- "-std=[^\" ]*" compile_commands.json \
-              | sort \
-              | uniq -c \
-              | head -20
+          echo "=== compile_commands.json ==="
+
+          if [ ! -f compile_commands.json ]; then
+            echo "ERROR: compile_commands.json was not generated."
+            exit 1
+          fi
+
+          grep -o -- "-std=[^\" ]*" compile_commands.json \
+            | sort \
+            | uniq -c
+
+          echo "=== checking for C++17 ==="
+
+          if grep -q -- "-std=c++17" compile_commands.json; then
+            echo "C++17 is enabled."
+          elif grep -q -- "-std=gnu++17" compile_commands.json; then
+            echo "GNU C++17 is enabled."
           else
-            echo "compile_commands.json was not generated."
+            echo "ERROR: C++17 was NOT detected."
+            exit 1
           fi
 
       # ----------------------------------------
-      # 11. bedrock-vizをビルド
+      # 15. bedrock-vizをビルド
       # ----------------------------------------
       - name: Build bedrock-viz
         run: |
@@ -248,10 +365,12 @@ jobs:
           cmake --build . --parallel
 
           echo "=== built files ==="
-          find . -maxdepth 3 -type f -name "bedrock-viz" -print
+          find . -maxdepth 3 -type f \
+            -name "bedrock-viz" \
+            -print
 
       # ----------------------------------------
-      # 12. bedrock-vizでWeb地図を生成
+      # 16. bedrock-vizでWeb地図を生成
       # ----------------------------------------
       - name: Generate map
         run: |
@@ -271,7 +390,7 @@ jobs:
             --html-most
 
       # ----------------------------------------
-      # 13. 生成結果を確認
+      # 17. 生成結果を確認
       # ----------------------------------------
       - name: Check generated map
         run: |
@@ -282,7 +401,7 @@ jobs:
           find map -type f -name "*.html" -print
 
       # ----------------------------------------
-      # 14. Artifactとして保存
+      # 18. Artifactとして保存
       # ----------------------------------------
       - name: Upload map artifact
         uses: actions/upload-artifact@v4
