@@ -13,47 +13,44 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sshpass
 
-      - name: Download level.dat
+      - name: Download world archive
         env:
           SSHPASS: ${{ secrets.RINGO_SFTP_PASSWORD }}
           SFTP_HOST: ${{ secrets.RINGO_SFTP_HOST }}
           SFTP_PORT: ${{ secrets.RINGO_SFTP_PORT }}
           SFTP_USER: ${{ secrets.RINGO_SFTP_USER }}
         run: |
-          mkdir -p world/level
+          mkdir -p world
 
           printf '%s\n' \
-            'get /worlds/level/level.dat world/level/level.dat' \
+            'get /worlds/level/archive-2026-09-10T185240+0900.tar.gz world/archive.tar.gz' \
             'bye' \
           | sshpass -e sftp \
               -o StrictHostKeyChecking=no \
               -P "$SFTP_PORT" \
               "$SFTP_USER@$SFTP_HOST"
 
-      - name: Download db
-        env:
-          SSHPASS: ${{ secrets.RINGO_SFTP_PASSWORD }}
-          SFTP_HOST: ${{ secrets.RINGO_SFTP_HOST }}
-          SFTP_PORT: ${{ secrets.RINGO_SFTP_PORT }}
-          SFTP_USER: ${{ secrets.RINGO_SFTP_USER }}
+      - name: Check downloaded archive
         run: |
-          mkdir -p world/level/db
+          echo "=== archive ==="
+          ls -lh world/archive.tar.gz
 
-          printf '%s\n' \
-            'get -r /worlds/level/db/* world/level/db/' \
-            'bye' \
-          | sshpass -e sftp \
-              -o StrictHostKeyChecking=no \
-              -P "$SFTP_PORT" \
-              "$SFTP_USER@$SFTP_HOST"
+          echo "=== archive type ==="
+          file world/archive.tar.gz
 
-      - name: Check downloaded world
+      - name: Extract world
         run: |
+          mkdir -p extracted
+
+          tar -xzf world/archive.tar.gz -C extracted
+
+      - name: Check extracted files
+        run: |
+          echo "=== extracted files ==="
+          find extracted -maxdepth 3 -type f | head -100
+
           echo "=== level.dat ==="
-          ls -lh world/level/level.dat
+          find extracted -name level.dat -type f -print
 
-          echo "=== db size ==="
-          du -sh world/level/db
-
-          echo "=== db file count ==="
-          find world/level/db -type f | wc -l
+          echo "=== db directory ==="
+          find extracted -type d -name db -print
