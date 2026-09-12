@@ -134,16 +134,26 @@ jobs:
           PY
 
       # ----------------------------------------
-      # 8. bedrock-vizをビルド
+      # 8. CMakeを設定
       # ----------------------------------------
-      - name: Build bedrock-viz
+      - name: Configure CMake
         run: |
           cd bedrock-viz
 
           mkdir -p build
           cd build
 
-          cmake ..
+          cmake .. \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+            -DCMAKE_CXX_EXTENSIONS=OFF
+
+      # ----------------------------------------
+      # 9. bedrock-vizをビルド
+      # ----------------------------------------
+      - name: Build bedrock-viz
+        run: |
+          cd bedrock-viz/build
 
           cmake --build . --parallel
 
@@ -151,7 +161,7 @@ jobs:
           find . -maxdepth 3 -type f -name "bedrock-viz" -print
 
       # ----------------------------------------
-      # 9. bedrock-vizでWeb地図を生成
+      # 10. bedrock-vizでWeb地図を生成
       # ----------------------------------------
       - name: Generate map
         run: |
@@ -171,7 +181,7 @@ jobs:
             --html-most
 
       # ----------------------------------------
-      # 10. 生成結果を確認
+      # 11. 生成結果を確認
       # ----------------------------------------
       - name: Check generated map
         run: |
@@ -182,7 +192,7 @@ jobs:
           find map -type f -name "*.html" -print
 
       # ----------------------------------------
-      # 11. Artifactとして保存
+      # 12. Artifactとして保存
       # ----------------------------------------
       - name: Upload map artifact
         uses: actions/upload-artifact@v4
