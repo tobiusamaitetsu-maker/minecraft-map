@@ -1,105 +1,94 @@
-name: Generate Bedrock Map
+name: Generate Minecraft Map
 
 on:
   workflow_dispatch:
 
 jobs:
-  generate-map:
+  build-map:
     runs-on: ubuntu-latest
 
     steps:
-      # ----------------------------------------
-      # 1. 必要なツールをインストール
-      # ----------------------------------------
+      # ============================================================
+      # 1. Checkout
+      # ============================================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ============================================================
+      # 2. Install dependencies
+      # ============================================================
       - name: Install dependencies
         run: |
           sudo apt-get update
 
           sudo apt-get install -y \
-            sshpass \
+            build-essential \
             cmake \
-            libxml2-dev \
-            libpng-dev \
-            libboost-all-dev \
-            g++ \
             git \
-            patch
+            python3 \
+            python3-pip \
+            openssh-client \
+            sshpass \
+            libboost-all-dev \
+            zlib1g-dev \
+            libpng-dev
 
-      # ----------------------------------------
-      # 2. コンパイラを確認
-      # ----------------------------------------
-      - name: Check compiler
-        run: |
-          echo "=== GCC ==="
-          gcc --version
-
-          echo "=== G++ ==="
-          g++ --version
-
-          echo "=== CMake ==="
-          cmake --version
-
-      # ----------------------------------------
-      # 3. C++17を強制
-      # ----------------------------------------
-      - name: Set C++17 environment
-        run: |
-          echo "CXX=g++" >> "$GITHUB_ENV"
-          echo "CC=gcc" >> "$GITHUB_ENV"
-          echo 'CXXFLAGS=-std=c++17' >> "$GITHUB_ENV"
-
-      # ----------------------------------------
-      # 4. RingoNetworksからワールドアーカイブを取得
-      # ----------------------------------------
+      # ============================================================
+      # 3. Download Minecraft world archive from RingoNetworks
+      # ============================================================
       - name: Download world archive
         env:
-          SSHPASS: ${{ secrets.RINGO_SFTP_PASSWORD }}
-          SFTP_HOST: ${{ secrets.RINGO_SFTP_HOST }}
-          SFTP_PORT: ${{ secrets.RINGO_SFTP_PORT }}
-          SFTP_USER: ${{ secrets.RINGO_SFTP_USER }}
+          RINGO_SFTP_HOST: ${{ secrets.RINGO_SFTP_HOST }}
+          RINGO_SFTP_PORT: ${{ secrets.RINGO_SFTP_PORT }}
+          RINGO_SFTP_USER: ${{ secrets.RINGO_SFTP_USER }}
+          RINGO_SFTP_PASSWORD: ${{ secrets.RINGO_SFTP_PASSWORD }}
         run: |
-          mkdir -p world
+          set -e
 
-          printf '%s\n' \
-            'get /worlds/level/archive-2026-09-10T185240+0900.tar.gz world/archive.tar.gz' \
-            'bye' \
-          | sshpass -e sftp \
-              -o StrictHostKeyChecking=no \
-              -P "$SFTP_PORT" \
-              "$SFTP_USER@$SFTP_HOST"
+          mkdir -p world_archive
 
-      # ----------------------------------------
-      # 5. アーカイブを確認
-      # ----------------------------------------
-      - name: Check downloaded archive
-        run: |
-          echo "=== archive ==="
-          ls -lh world/archive.tar.gz
+          echo "=== Downloading world archive ==="
 
-          echo "=== archive type ==="
-          file world/archive.tar.gz
+          export SSHPASS="$RINGO_SFTP_PASSWORD"
 
-      # ----------------------------------------
-      # 6. ワールドを展開
-      # ----------------------------------------
+          sshpass -e sftp \
+            -P "$RINGO_SFTP_PORT" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            "$RINGO_SFTP_USER@$RINGO_SFTP_HOST" <<'EOF'
+          get /worlds/level/archive-2026-09-10T185240+0900.tar.gz world_archive/world.tar.gz
+          EOF
+
+          echo "=== Downloaded archive ==="
+          ls -lh world_archive/world.tar.gz
+
+      # ============================================================
+      # 4. Extract Minecraft world
+      # ============================================================
       - name: Extract world
         run: |
-          mkdir -p extracted
+          set -e
 
-          tar -xzf world/archive.tar.gz -C extracted
+          mkdir -p world
 
-      # ----------------------------------------
-      # 7. level.dat / dbを確認
-      # ----------------------------------------
-      - name: Validate world
+          echo "=== Extracting world ==="
+
+          tar -xzf world_archive/world.tar.gz -C world
+
+          echo "=== Extracted files ==="
+
+          find world -maxdepth 3 -type f | head -100
+
+      # ============================================================
+      # 5. Locate level.dat
+      # ============================================================
+      - name: Locate world
         run: |
-          echo "=== level.dat ==="
-          find extracted -name level.dat -type f -print
+          set -e
 
-          echo "=== db ==="
-          find extracted -type d -name db -print
+          echo "=== Searching for level.dat ==="
 
-          LEVEL_DAT=$(find extracted -name level.dat -type f | head -1)
+          LEVEL_DAT=$(find world -name level.dat -type f | head -1)
 
           if [ -z "$LEVEL_DAT" ]; then
             echo "ERROR: level.dat was not found."
@@ -108,31 +97,61 @@ jobs:
 
           WORLD_DIR=$(dirname "$LEVEL_DAT")
 
-          echo "World directory:"
+          echo "LEVEL_DAT=$LEVEL_DAT"
+          echo "WORLD_DIR=$WORLD_DIR"
+
+          echo "$WORLD_DIR" > world_dir.txt
+
+      # ============================================================
+      # 6. Validate world
+      # ============================================================
+      - name: Validate world
+        run: |
+          set -e
+
+          WORLD_DIR=$(cat world_dir.txt)
+
+          echo "=== World directory ==="
           echo "$WORLD_DIR"
+
+          echo "=== level.dat ==="
+          ls -lh "$WORLD_DIR/level.dat"
+
+          echo "=== db directory ==="
 
           if [ ! -d "$WORLD_DIR/db" ]; then
             echo "ERROR: db directory was not found."
             exit 1
           fi
 
-      # ----------------------------------------
-      # 8. bedrock-vizを取得
-      # ----------------------------------------
-      - name: Checkout bedrock-viz
+          ls -ld "$WORLD_DIR/db"
+
+          echo "=== World validation passed ==="
+
+      # ============================================================
+      # 7. Clone bedrock-viz
+      # ============================================================
+      - name: Clone bedrock-viz
         run: |
+          set -e
+
           git clone --recursive \
             https://github.com/paulgrahek/bedrock-viz.git \
             bedrock-viz
 
-      # ----------------------------------------
-      # 9. LevelDBパッチ
-      # ----------------------------------------
-      - name: Fix LevelDB build
-        run: |
           cd bedrock-viz
 
-          patch -p0 < patches/leveldb-1.22.patch
+          echo "=== bedrock-viz commit ==="
+          git rev-parse HEAD
+
+      # ============================================================
+      # 8. Apply LevelDB patch
+      # ============================================================
+      - name: Patch LevelDB
+        run: |
+          set -e
+
+          cd bedrock-viz
 
           python3 - <<'PY'
           from pathlib import Path
@@ -140,6 +159,10 @@ jobs:
           path = Path(
               "third_party/leveldb/table/compressor/zlib_compressor.cc"
           )
+
+          if not path.exists():
+              print("LevelDB zlib_compressor.cc not found.")
+              raise SystemExit(0)
 
           text = path.read_text()
 
@@ -151,77 +174,54 @@ jobs:
 
               path.write_text(text)
 
-              print("Added <cstdint> to zlib_compressor.cc")
+              print("Added <cstdint>.")
           else:
-              print("<cstdint> is already present")
+              print("<cstdint> already exists.")
           PY
 
-      # ----------------------------------------
-      # 10. filesystemヘッダーを確認
-      # ----------------------------------------
-      - name: Check filesystem headers
+      # ============================================================
+      # 9. Force C++17 in all CMakeLists.txt files
+      # ============================================================
+      - name: Force C++17
         run: |
+          set -e
+
           cd bedrock-viz
 
-          echo "=== logger.h ==="
-          sed -n '1,40p' include/logger.h
+          echo "=== CMakeLists.txt before patch ==="
 
-          echo "=== asset.h ==="
-          cat include/asset.h
+          grep -RInE \
+            --include='CMakeLists.txt' \
+            'CXX_STANDARD|std=c\+\+|std=gnu\+\+' \
+            . || true
 
-      # ----------------------------------------
-      # 11. 必要なfilesystem includeを補正
-      # ----------------------------------------
-      - name: Fix filesystem includes
+          echo
+          echo "=== Replacing C++11 with C++17 ==="
+
+          find . \
+            -name CMakeLists.txt \
+            -type f \
+            -print0 |
+          xargs -0 sed -i \
+            -e 's/std=c++11/std=c++17/g' \
+            -e 's/std=gnu++11/std=gnu++17/g' \
+            -e 's/CXX_STANDARD[[:space:]]\+11/CXX_STANDARD 17/g'
+
+          echo
+          echo "=== CMakeLists.txt after patch ==="
+
+          grep -RInE \
+            --include='CMakeLists.txt' \
+            'CXX_STANDARD|std=c\+\+|std=gnu\+\+' \
+            . || true
+
+      # ============================================================
+      # 10. Force C++17 in the main CMake configuration
+      # ============================================================
+      - name: Patch top-level CMakeLists
         run: |
-          cd bedrock-viz
+          set -e
 
-          python3 - <<'PY'
-          from pathlib import Path
-
-          files = [
-              Path("include/logger.h"),
-              Path("include/asset.h"),
-          ]
-
-          for path in files:
-              text = path.read_text()
-
-              if "#include <filesystem>" not in text:
-                  lines = text.splitlines()
-
-                  insert_index = 0
-
-                  while (
-                      insert_index < len(lines)
-                      and lines[insert_index].startswith("#")
-                  ):
-                      if lines[insert_index].startswith("#pragma once"):
-                          insert_index += 1
-                          continue
-
-                      break
-
-                  lines.insert(insert_index, "#include <filesystem>")
-
-                  path.write_text("\n".join(lines) + "\n")
-
-                  print(f"Added <filesystem> to {path}")
-              else:
-                  print(f"<filesystem> already exists in {path}")
-          PY
-
-          echo "=== logger.h after fix ==="
-          sed -n '1,15p' include/logger.h
-
-          echo "=== asset.h after fix ==="
-          sed -n '1,15p' include/asset.h
-
-      # ----------------------------------------
-      # 12. CMakeLists.txtにC++17を明示
-      # ----------------------------------------
-      - name: Force C++17 in CMakeLists
-        run: |
           cd bedrock-viz
 
           python3 - <<'PY'
@@ -230,82 +230,70 @@ jobs:
           path = Path("CMakeLists.txt")
           text = path.read_text()
 
-          if "set(CMAKE_CXX_STANDARD 17)" not in text:
-              marker = "project(bedrock-viz VERSION 0.1.2)"
+          required = """
+          # Force C++17 for all targets.
+          set(CMAKE_CXX_STANDARD 17)
+          set(CMAKE_CXX_STANDARD_REQUIRED ON)
+          set(CMAKE_CXX_EXTENSIONS OFF)
+          add_compile_options(-std=c++17)
+          """
 
-              if marker not in text:
-                  raise SystemExit(
-                      "ERROR: CMake project declaration was not found."
-                  )
+          if "Force C++17 for all targets." not in text:
+              marker = "project("
 
-              text = text.replace(
-                  marker,
-                  marker
-                  + "\n\n"
-                  + "set(CMAKE_CXX_STANDARD 17)\n"
-                  + "set(CMAKE_CXX_STANDARD_REQUIRED ON)\n"
-                  + "set(CMAKE_CXX_EXTENSIONS OFF)"
+              start = text.find(marker)
+
+              if start == -1:
+                  raise RuntimeError("project() was not found.")
+
+              line_end = text.find("\n", start)
+
+              if line_end == -1:
+                  line_end = len(text)
+
+              text = (
+                  text[:line_end + 1]
+                  + required
+                  + "\n"
+                  + text[line_end + 1:]
               )
 
-          if "CXX_STANDARD 17" not in text:
-              marker = "add_library(${LIB_NAME} STATIC ${SRC_FILES})"
+              path.write_text(text)
 
-              if marker not in text:
-                  raise SystemExit(
-                      "ERROR: libbedrock-viz target was not found."
-                  )
-
-              replacement = """add_library(${LIB_NAME} STATIC ${SRC_FILES})
-
-          set_target_properties(${LIB_NAME} PROPERTIES
-            CXX_STANDARD 17
-            CXX_STANDARD_REQUIRED ON
-            CXX_EXTENSIONS OFF
-          )
-
-          target_compile_features(${LIB_NAME} PUBLIC cxx_std_17)
-          """
-
-              text = text.replace(marker, replacement)
-
-          if "target_compile_features(${BIN_NAME} PRIVATE cxx_std_17)" not in text:
-              marker = "add_executable(${BIN_NAME} src/main.cc)"
-
-              if marker in text:
-                  replacement = """add_executable(${BIN_NAME} src/main.cc)
-
-          set_target_properties(${BIN_NAME} PROPERTIES
-            CXX_STANDARD 17
-            CXX_STANDARD_REQUIRED ON
-            CXX_EXTENSIONS OFF
-          )
-
-          target_compile_features(${BIN_NAME} PRIVATE cxx_std_17)
-          """
-
-                  text = text.replace(marker, replacement)
-
-          path.write_text(text)
-
-          print("C++17 configuration applied.")
+              print("Added global C++17 settings.")
+          else:
+              print("Global C++17 settings already exist.")
           PY
 
-          echo "=== CMakeLists C++ configuration ==="
-          grep -n -A8 -B3 \
-            "CXX_STANDARD\|target_compile_features" \
-            CMakeLists.txt
+          echo "=== Top-level CMakeLists ==="
+          sed -n '1,80p' CMakeLists.txt
 
-      # ----------------------------------------
-      # 13. CMakeを完全に再構築
-      # ----------------------------------------
-      - name: Configure CMake
+      # ============================================================
+      # 11. Prepare build directory
+      # ============================================================
+      - name: Prepare build directory
         run: |
+          set -e
+
           cd bedrock-viz
 
           rm -rf build
 
           mkdir build
-          cd build
+
+      # ============================================================
+      # 12. Configure CMake
+      # ============================================================
+      - name: Configure CMake
+        run: |
+          set -e
+
+          cd bedrock-viz/build
+
+          export CC=gcc
+          export CXX=g++
+
+          export CXXFLAGS="-std=c++17"
 
           cmake .. \
             -DCMAKE_C_COMPILER=gcc \
@@ -316,23 +304,30 @@ jobs:
             -DCMAKE_CXX_FLAGS="-std=c++17" \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-      # ----------------------------------------
-      # 14. 実際のコンパイルフラグを確認
-      # ----------------------------------------
+      # ============================================================
+      # 13. Verify compiler configuration
+      # ============================================================
       - name: Verify C++17 compile flags
         run: |
+          set -e
+
           cd bedrock-viz/build
 
+          echo
           echo "=== CMake compiler ==="
+
           grep -E \
-            "CMAKE_C_COMPILER:|CMAKE_CXX_COMPILER:" \
+            'CMAKE_CXX_COMPILER:|CMAKE_C_COMPILER:' \
             CMakeCache.txt || true
 
+          echo
           echo "=== CMake C++ standard ==="
+
           grep -E \
-            "CMAKE_CXX_STANDARD:|CMAKE_CXX_FLAGS:" \
+            'CMAKE_CXX_FLAGS:|CMAKE_CXX_STANDARD:' \
             CMakeCache.txt || true
 
+          echo
           echo "=== compile_commands.json ==="
 
           if [ ! -f compile_commands.json ]; then
@@ -340,73 +335,193 @@ jobs:
             exit 1
           fi
 
-          grep -o -- "-std=[^\" ]*" compile_commands.json \
-            | sort \
-            | uniq -c
+          grep -oE \
+            -- '-std=[^" ]+' \
+            compile_commands.json |
+            sort |
+            uniq -c
 
-          echo "=== checking for C++17 ==="
+          echo
+          echo "=== C++11 entries ==="
 
-          if grep -q -- "-std=c++17" compile_commands.json; then
-            echo "C++17 is enabled."
-          elif grep -q -- "-std=gnu++17" compile_commands.json; then
-            echo "GNU C++17 is enabled."
-          else
-            echo "ERROR: C++17 was NOT detected."
+          python3 - <<'PY'
+          import json
+
+          with open("compile_commands.json") as f:
+              commands = json.load(f)
+
+          found = False
+
+          for i, entry in enumerate(commands, 1):
+              command = entry.get("command", "")
+
+              if not command:
+                  command = " ".join(
+                      entry.get("arguments", [])
+                  )
+
+              if "-std=c++11" in command or "-std=gnu++11" in command:
+                  found = True
+
+                  print("=== C++11 FOUND ===")
+                  print("Entry:", i)
+                  print("File:", entry.get("file"))
+                  print("Command:")
+                  print(command)
+                  print()
+
+          if found:
+              print(
+                  "ERROR: C++11 compile flags are still present."
+              )
+              raise SystemExit(1)
+
+          print("No C++11 compile flags found.")
+
+          print()
+          print("=== C++17 entries ===")
+
+          count = 0
+
+          for i, entry in enumerate(commands, 1):
+              command = entry.get("command", "")
+
+              if not command:
+                  command = " ".join(
+                      entry.get("arguments", [])
+                  )
+
+              if (
+                  "-std=c++17" in command
+                  or "-std=gnu++17" in command
+              ):
+                  count += 1
+
+                  if count <= 10:
+                      print("Entry:", i)
+                      print("File:", entry.get("file"))
+                      print(command)
+                      print()
+
+          if count == 0:
+              print("ERROR: No C++17 compile commands found.")
+              raise SystemExit(1)
+
+          print(
+              f"C++17 compile commands found: {count}"
+          )
+          PY
+
+      # ============================================================
+      # 14. Build bedrock-viz
+      # ============================================================
+      - name: Build bedrock-viz
+        run: |
+          set -e
+
+          cd bedrock-viz
+
+          echo "=== Building bedrock-viz ==="
+
+          cmake --build build \
+            --config Release \
+            --parallel 2 \
+            --verbose
+
+      # ============================================================
+      # 15. Locate executable
+      # ============================================================
+      - name: Locate bedrock-viz executable
+        run: |
+          set -e
+
+          cd bedrock-viz
+
+          echo "=== Searching executable ==="
+
+          find build \
+            -type f \
+            -executable \
+            -name 'bedrock-viz' \
+            -print
+
+          BEDROCK_VIZ=$(find build \
+            -type f \
+            -executable \
+            -name 'bedrock-viz' \
+            | head -1)
+
+          if [ -z "$BEDROCK_VIZ" ]; then
+            echo "ERROR: bedrock-viz executable was not found."
             exit 1
           fi
 
-      # ----------------------------------------
-      # 15. bedrock-vizをビルド
-      # ----------------------------------------
-      - name: Build bedrock-viz
-        run: |
-          cd bedrock-viz/build
+          echo "$BEDROCK_VIZ" > ../bedrock_viz_binary.txt
 
-          cmake --build . --parallel
+          echo "Executable:"
+          echo "$BEDROCK_VIZ"
 
-          echo "=== built files ==="
-          find . -maxdepth 3 -type f \
-            -name "bedrock-viz" \
-            -print
-
-      # ----------------------------------------
-      # 16. bedrock-vizでWeb地図を生成
-      # ----------------------------------------
+      # ============================================================
+      # 16. Generate map
+      # ============================================================
       - name: Generate map
         run: |
-          LEVEL_DAT=$(find extracted -name level.dat -type f | head -1)
-          WORLD_DIR=$(dirname "$LEVEL_DAT")
+          set -e
+
+          WORLD_DIR=$(cat world_dir.txt)
+          BEDROCK_VIZ=$(cat bedrock_viz_binary.txt)
+
+          rm -rf map
 
           mkdir -p map
 
-          echo "=== World directory ==="
+          echo "=== World ==="
           echo "$WORLD_DIR"
 
-          echo "=== Running bedrock-viz ==="
+          echo
+          echo "=== bedrock-viz ==="
+          echo "$BEDROCK_VIZ"
 
-          ./bedrock-viz/build/bedrock-viz \
+          echo
+          echo "=== Generate map ==="
+
+          "$BEDROCK_VIZ" \
             --db "$WORLD_DIR" \
             --out map/out1 \
             --html-most
 
-      # ----------------------------------------
-      # 17. 生成結果を確認
-      # ----------------------------------------
-      - name: Check generated map
+          echo
+          echo "=== Generated files ==="
+
+          find map \
+            -maxdepth 3 \
+            -type f \
+            | head -100
+
+      # ============================================================
+      # 17. Prepare GitHub Pages-friendly output
+      # ============================================================
+      - name: Prepare map artifact
         run: |
-          echo "=== generated map ==="
-          find map -maxdepth 2 -type f | head -100
+          set -e
 
+          echo "=== Map size ==="
+          du -sh map
+
+          echo
           echo "=== HTML files ==="
-          find map -type f -name "*.html" -print
 
-      # ----------------------------------------
-      # 18. Artifactとして保存
-      # ----------------------------------------
+          find map \
+            -type f \
+            -name '*.html' \
+            -print
+
+      # ============================================================
+      # 18. Upload generated map as GitHub Actions Artifact
+      # ============================================================
       - name: Upload map artifact
         uses: actions/upload-artifact@v4
         with:
           name: bedrock-viz-map
           path: map/
-          if-no-files-found: error
           retention-days: 7
