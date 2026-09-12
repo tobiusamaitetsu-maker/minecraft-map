@@ -30,8 +30,30 @@ jobs:
               -P "$SFTP_PORT" \
               "$SFTP_USER@$SFTP_HOST"
 
-      - name: Check level.dat
+      - name: Download db
+        env:
+          SSHPASS: ${{ secrets.RINGO_SFTP_PASSWORD }}
+          SFTP_HOST: ${{ secrets.RINGO_SFTP_HOST }}
+          SFTP_PORT: ${{ secrets.RINGO_SFTP_PORT }}
+          SFTP_USER: ${{ secrets.RINGO_SFTP_USER }}
+        run: |
+          mkdir -p world/level/db
+
+          printf '%s\n' \
+            'get -r /worlds/level/db/* world/level/db/' \
+            'bye' \
+          | sshpass -e sftp \
+              -o StrictHostKeyChecking=no \
+              -P "$SFTP_PORT" \
+              "$SFTP_USER@$SFTP_HOST"
+
+      - name: Check downloaded world
         run: |
           echo "=== level.dat ==="
           ls -lh world/level/level.dat
-          file world/level/level.dat
+
+          echo "=== db size ==="
+          du -sh world/level/db
+
+          echo "=== db file count ==="
+          find world/level/db -type f | wc -l
