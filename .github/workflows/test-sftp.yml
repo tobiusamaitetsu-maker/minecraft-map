@@ -8,13 +8,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # --------------------------------------------------
-      # 1. 必要なパッケージをインストール
-      # --------------------------------------------------
       - name: Install dependencies
         run: |
           sudo apt-get update
-
           sudo apt-get install -y \
             build-essential \
             cmake \
@@ -28,9 +24,6 @@ jobs:
             libpng-dev \
             libpng++-dev
 
-      # --------------------------------------------------
-      # 2. RingoNetworksからワールドアーカイブを取得
-      # --------------------------------------------------
       - name: Download Minecraft world
         env:
           SSHPASS: ${{ secrets.RINGO_SFTP_PASSWORD }}
@@ -54,12 +47,8 @@ jobs:
 
           echo
           echo "=== Downloaded archive ==="
-
           ls -lh world/world.tar.gz
 
-      # --------------------------------------------------
-      # 3. ワールドを展開
-      # --------------------------------------------------
       - name: Extract Minecraft world
         run: |
           set -e
@@ -70,20 +59,12 @@ jobs:
           echo " Extracting Minecraft world"
           echo "=========================================="
 
-          tar -xzf world/world.tar.gz \
-            -C world/extracted
+          tar -xzf world/world.tar.gz -C world/extracted
 
           echo
           echo "=== Extracted files ==="
+          find world/extracted -maxdepth 3 -type f | head -100
 
-          find world/extracted \
-            -maxdepth 3 \
-            -type f \
-            | head -100
-
-      # --------------------------------------------------
-      # 4. ワールドを確認
-      # --------------------------------------------------
       - name: Validate Minecraft world
         run: |
           set -e
@@ -118,14 +99,8 @@ jobs:
 
           echo
           echo "=== LevelDB file count ==="
+          find "$WORLD_DIR/db" -type f | wc -l
 
-          find "$WORLD_DIR/db" \
-            -type f \
-            | wc -l
-
-      # --------------------------------------------------
-      # 5. bedrock-vizを取得
-      # --------------------------------------------------
       - name: Clone bedrock-viz
         run: |
           set -e
@@ -142,17 +117,12 @@ jobs:
 
           echo
           echo "=== bedrock-viz commit ==="
-
           git rev-parse HEAD
 
           echo
           echo "=== Submodule status ==="
-
           git submodule status
 
-      # --------------------------------------------------
-      # 6. LevelDBパッチを適用
-      # --------------------------------------------------
       - name: Apply bedrock-viz patches
         run: |
           set -e
@@ -170,8 +140,7 @@ jobs:
           echo " Applying LevelDB patch"
           echo "=========================================="
 
-          git apply -p0 \
-            patches/leveldb-1.22.patch
+          git apply -p0 patches/leveldb-1.22.patch
 
           echo
           echo "LevelDB patch applied successfully."
@@ -181,19 +150,14 @@ jobs:
           echo " Applying pugixml patch"
           echo "=========================================="
 
-          if [ -f patches/pugixml-disable-install.patch ]; then
-            git apply -p0 \
-              patches/pugixml-disable-install.patch
-
+          if [ -f "patches/pugixml-disable-install.patch" ]; then
+            git apply -p0 patches/pugixml-disable-install.patch
             echo
             echo "pugixml patch applied successfully."
           else
             echo "pugixml patch not found. Skipping."
           fi
 
-      # --------------------------------------------------
-      # 7. LevelDBパッチ適用後の確認
-      # --------------------------------------------------
       - name: Verify LevelDB patch
         run: |
           set -e
@@ -206,32 +170,20 @@ jobs:
 
           echo
           echo "=== DecompressAllocator ==="
-
-          grep -RIn \
-            "DecompressAllocator" \
-            third_party/leveldb \
-            || true
+          grep -RIn "DecompressAllocator" third_party/leveldb || true
 
           echo
           echo "=== decompress_allocator ==="
-
-          grep -RIn \
-            "decompress_allocator" \
-            third_party/leveldb \
-            || true
+          grep -RIn "decompress_allocator" third_party/leveldb || true
 
           echo
           echo "=== kZlibRawCompression ==="
-
-          grep -RIn \
-            "kZlibRawCompression" \
-            third_party/leveldb \
-            || true
+          grep -RIn "kZlibRawCompression" third_party/leveldb || true
 
           echo
           echo "=== decompress_allocator.h ==="
 
-          if [ -f third_party/leveldb/include/leveldb/decompress_allocator.h ]; then
+          if [ -f "third_party/leveldb/include/leveldb/decompress_allocator.h" ]; then
             echo "FOUND:"
             echo "third_party/leveldb/include/leveldb/decompress_allocator.h"
           else
@@ -246,9 +198,6 @@ jobs:
 
           git status --short
 
-      # --------------------------------------------------
-      # 8. zlib_compressor.ccのC++型定義を確認
-      # --------------------------------------------------
       - name: Fix zlib compressor include
         run: |
           set -e
@@ -262,19 +211,14 @@ jobs:
           echo "=========================================="
 
           if [ -f "$FILE" ]; then
-
             echo
             echo "=== Before ==="
-
             sed -n '1,50p' "$FILE"
 
             python3 - <<'PY'
           from pathlib import Path
 
-          path = Path(
-              "third_party/leveldb/table/compressor/zlib_compressor.cc"
-          )
-
+          path = Path("third_party/leveldb/table/compressor/zlib_compressor.cc")
           text = path.read_text()
 
           if "#include <cstdint>" not in text:
@@ -282,9 +226,7 @@ jobs:
                   "#include <zlib.h>",
                   "#include <zlib.h>\n#include <cstdint>"
               )
-
               path.write_text(text)
-
               print("Added <cstdint>.")
           else:
               print("<cstdint> already exists.")
@@ -292,16 +234,11 @@ jobs:
 
             echo
             echo "=== After ==="
-
             sed -n '1,50p' "$FILE"
-
           else
             echo "zlib_compressor.cc not found."
           fi
 
-      # --------------------------------------------------
-      # 9. libnbtplusplusのC++11指定をC++17へ変更
-      # --------------------------------------------------
       - name: Fix libnbtplusplus C++ standard
         run: |
           set -e
@@ -315,29 +252,16 @@ jobs:
           echo "=========================================="
 
           if [ -f "$FILE" ]; then
-
             echo
             echo "=== Before ==="
-
-            grep -n \
-              -E "std=c\+\+|CXX_STANDARD" \
-              "$FILE" \
-              || true
+            grep -n -E "std=c\+\+|CXX_STANDARD" "$FILE" || true
 
             python3 - <<'PY'
           from pathlib import Path
 
-          path = Path(
-              "third_party/libnbtplusplus/CMakeLists.txt"
-          )
-
+          path = Path("third_party/libnbtplusplus/CMakeLists.txt")
           text = path.read_text()
-
-          text = text.replace(
-              "-std=c++11",
-              "-std=c++17"
-          )
-
+          text = text.replace("-std=c++11", "-std=c++17")
           path.write_text(text)
 
           print("libnbtplusplus C++ standard updated.")
@@ -345,19 +269,11 @@ jobs:
 
             echo
             echo "=== After ==="
-
-            grep -n \
-              -E "std=c\+\+|CXX_STANDARD" \
-              "$FILE" \
-              || true
-
+            grep -n -E "std=c\+\+|CXX_STANDARD" "$FILE" || true
           else
             echo "libnbtplusplus CMakeLists.txt not found."
           fi
 
-      # --------------------------------------------------
-      # 10. CMakeLists.txtをC++17に設定
-      # --------------------------------------------------
       - name: Configure CMake settings
         run: |
           set -e
@@ -372,7 +288,6 @@ jobs:
           from pathlib import Path
 
           path = Path("CMakeLists.txt")
-
           text = path.read_text()
 
           if "set(CMAKE_CXX_STANDARD 17)" not in text:
@@ -391,15 +306,8 @@ jobs:
 
           echo
           echo "=== C++ standard settings ==="
+          grep -n -E "CXX_STANDARD|CXX_EXTENSIONS" CMakeLists.txt || true
 
-          grep -n \
-            -E "CXX_STANDARD|CXX_EXTENSIONS" \
-            CMakeLists.txt \
-            || true
-
-      # --------------------------------------------------
-      # 11. ビルドディレクトリ作成
-      # --------------------------------------------------
       - name: Create build directory
         run: |
           set -e
@@ -407,12 +315,8 @@ jobs:
           cd bedrock-viz
 
           rm -rf build
-
           mkdir build
 
-      # --------------------------------------------------
-      # 12. CMake
-      # --------------------------------------------------
       - name: Run CMake
         run: |
           set -e
@@ -431,9 +335,6 @@ jobs:
             -DCMAKE_CXX_FLAGS="-std=c++17" \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-      # --------------------------------------------------
-      # 13. C++17設定を確認
-      # --------------------------------------------------
       - name: Verify compiler settings
         run: |
           set -e
@@ -444,31 +345,22 @@ jobs:
           echo " CMake compiler"
           echo "=========================================="
 
-          grep -E \
-            "CMAKE_CXX_COMPILER:|CMAKE_C_COMPILER:" \
-            CMakeCache.txt \
-            || true
+          grep -E "CMAKE_CXX_COMPILER:|CMAKE_C_COMPILER:" CMakeCache.txt || true
 
           echo
           echo "=========================================="
           echo " CMake C++ standard"
           echo "=========================================="
 
-          grep -E \
-            "CMAKE_CXX_STANDARD|CMAKE_CXX_FLAGS" \
-            CMakeCache.txt \
-            || true
+          grep -E "CMAKE_CXX_STANDARD|CMAKE_CXX_FLAGS" CMakeCache.txt || true
 
           echo
           echo "=========================================="
           echo " compile_commands.json"
           echo "=========================================="
 
-          if [ -f compile_commands.json ]; then
-
-            grep -o \
-              -- "-std=c++[0-9]*" \
-              compile_commands.json \
+          if [ -f "compile_commands.json" ]; then
+            grep -o -- "-std=c++[0-9]*" compile_commands.json \
               | sort \
               | uniq -c \
               || true
@@ -476,34 +368,22 @@ jobs:
             echo
             echo "=== C++11 commands ==="
 
-            if grep -n \
-              -- "-std=c++11" \
-              compile_commands.json; then
-
+            if grep -n -- "-std=c++11" compile_commands.json; then
               echo "WARNING: C++11 command detected."
-
             else
-
               echo "No C++11 compile command detected."
-
             fi
 
             echo
             echo "=== C++17 commands ==="
 
-            grep -n \
-              -- "-std=c++17" \
-              compile_commands.json \
+            grep -n -- "-std=c++17" compile_commands.json \
               | head -20 \
               || true
-
           else
             echo "compile_commands.json not found."
           fi
 
-      # --------------------------------------------------
-      # 14. bedrock-vizをビルド
-      # --------------------------------------------------
       - name: Build bedrock-viz
         run: |
           set -e
@@ -519,9 +399,6 @@ jobs:
             --parallel 2 \
             --verbose
 
-      # --------------------------------------------------
-      # 15. bedrock-vizをインストール
-      # --------------------------------------------------
       - name: Install bedrock-viz
         run: |
           set -e
@@ -534,9 +411,6 @@ jobs:
 
           sudo cmake --install .
 
-      # --------------------------------------------------
-      # 16. インストールされたファイルを確認
-      # --------------------------------------------------
       - name: Verify bedrock-viz installation
         run: |
           set -e
@@ -552,8 +426,7 @@ jobs:
           echo " Installed data files"
           echo "=========================================="
 
-          find \
-            /usr/local/share/bedrock-viz \
+          find /usr/local/share/bedrock-viz \
             -maxdepth 3 \
             -type f \
             -print
@@ -563,31 +436,23 @@ jobs:
           echo " Checking bedrock_viz.xml"
           echo "=========================================="
 
-          if [ -f \
-            /usr/local/share/bedrock-viz/data/bedrock_viz.xml
-          ]; then
+          XML_FILE="/usr/local/share/bedrock-viz/data/bedrock_viz.xml"
 
+          if [ -f "$XML_FILE" ]; then
             echo "FOUND:"
-            echo "/usr/local/share/bedrock-viz/data/bedrock_viz.xml"
-
+            echo "$XML_FILE"
           else
-
             echo "ERROR: bedrock_viz.xml was not installed."
             exit 1
-
           fi
 
-      # --------------------------------------------------
-      # 17. マップ生成
-      # --------------------------------------------------
       - name: Generate map
         run: |
           set -e
 
           WORLD_DIR="$GITHUB_WORKSPACE/world/extracted"
 
-          mkdir -p \
-            "$GITHUB_WORKSPACE/map"
+          mkdir -p "$GITHUB_WORKSPACE/map"
 
           echo "=========================================="
           echo " World"
@@ -597,15 +462,11 @@ jobs:
 
           echo
           echo "=== level.dat ==="
-
-          ls -lh \
-            "$WORLD_DIR/level.dat"
+          ls -lh "$WORLD_DIR/level.dat"
 
           echo
           echo "=== db ==="
-
-          ls -ld \
-            "$WORLD_DIR/db"
+          ls -ld "$WORLD_DIR/db"
 
           echo
           echo "=========================================="
@@ -627,9 +488,6 @@ jobs:
             --out "$GITHUB_WORKSPACE/map/out1" \
             --html-most
 
-      # --------------------------------------------------
-      # 18. マップ生成結果確認
-      # --------------------------------------------------
       - name: Check generated map
         run: |
           set -e
@@ -638,8 +496,7 @@ jobs:
           echo " Generated map"
           echo "=========================================="
 
-          if [ -d map ]; then
-
+          if [ -d "map" ]; then
             find map \
               -maxdepth 4 \
               -type f \
@@ -651,17 +508,11 @@ jobs:
             find map \
               -type f \
               | wc -l
-
           else
-
             echo "ERROR: map directory was not created."
             exit 1
-
           fi
 
-      # --------------------------------------------------
-      # 19. GitHub Actions Artifactへ保存
-      # --------------------------------------------------
       - name: Upload map artifact
         uses: actions/upload-artifact@v4
         with:
