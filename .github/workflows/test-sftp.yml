@@ -375,16 +375,13 @@ jobs:
 
           text = path.read_text()
 
-          settings = """
-          set(CMAKE_CXX_STANDARD 17)
-          set(CMAKE_CXX_STANDARD_REQUIRED ON)
-          set(CMAKE_CXX_EXTENSIONS OFF)
-          """
-
           if "set(CMAKE_CXX_STANDARD 17)" not in text:
               text = text.replace(
                   "project(bedrock-viz",
-                  settings + "\nproject(bedrock-viz"
+                  "set(CMAKE_CXX_STANDARD 17)\n"
+                  "set(CMAKE_CXX_STANDARD_REQUIRED ON)\n"
+                  "set(CMAKE_CXX_EXTENSIONS OFF)\n\n"
+                  "project(bedrock-viz"
               )
 
           path.write_text(text)
@@ -523,26 +520,65 @@ jobs:
             --verbose
 
       # --------------------------------------------------
-      # 15. 実行ファイルを探す
+      # 15. bedrock-vizをインストール
       # --------------------------------------------------
-      - name: Find bedrock-viz executable
+      - name: Install bedrock-viz
         run: |
           set -e
 
-          cd bedrock-viz
+          cd bedrock-viz/build
 
           echo "=========================================="
-          echo " Searching executable"
+          echo " Installing bedrock-viz"
           echo "=========================================="
 
-          find . \
-            -type f \
-            -executable \
-            -not -path "./.git/*" \
-            -print
+          sudo cmake --install .
 
       # --------------------------------------------------
-      # 16. マップ生成
+      # 16. インストールされたファイルを確認
+      # --------------------------------------------------
+      - name: Verify bedrock-viz installation
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo " Installed executable"
+          echo "=========================================="
+
+          which bedrock-viz
+
+          echo
+          echo "=========================================="
+          echo " Installed data files"
+          echo "=========================================="
+
+          find \
+            /usr/local/share/bedrock-viz \
+            -maxdepth 3 \
+            -type f \
+            -print
+
+          echo
+          echo "=========================================="
+          echo " Checking bedrock_viz.xml"
+          echo "=========================================="
+
+          if [ -f \
+            /usr/local/share/bedrock-viz/data/bedrock_viz.xml
+          ]; then
+
+            echo "FOUND:"
+            echo "/usr/local/share/bedrock-viz/data/bedrock_viz.xml"
+
+          else
+
+            echo "ERROR: bedrock_viz.xml was not installed."
+            exit 1
+
+          fi
+
+      # --------------------------------------------------
+      # 17. マップ生成
       # --------------------------------------------------
       - name: Generate map
         run: |
@@ -573,39 +609,11 @@ jobs:
 
           echo
           echo "=========================================="
-          echo " Searching bedrock-viz"
+          echo " bedrock-viz"
           echo "=========================================="
 
-          BEDROCK_VIZ=""
+          BEDROCK_VIZ="$(which bedrock-viz)"
 
-          for candidate in \
-            "$GITHUB_WORKSPACE/bedrock-viz/build/bedrock-viz" \
-            "$GITHUB_WORKSPACE/bedrock-viz/build/bin/bedrock-viz" \
-            "$GITHUB_WORKSPACE/bedrock-viz/bedrock-viz"
-          do
-
-            if [ -x "$candidate" ]; then
-              BEDROCK_VIZ="$candidate"
-              break
-            fi
-
-          done
-
-          if [ -z "$BEDROCK_VIZ" ]; then
-
-            echo "ERROR: bedrock-viz executable was not found."
-
-            find \
-              "$GITHUB_WORKSPACE/bedrock-viz/build" \
-              -type f \
-              -executable \
-              -print
-
-            exit 1
-
-          fi
-
-          echo
           echo "Using:"
           echo "$BEDROCK_VIZ"
 
@@ -620,7 +628,7 @@ jobs:
             --html-most
 
       # --------------------------------------------------
-      # 17. マップ生成結果確認
+      # 18. マップ生成結果確認
       # --------------------------------------------------
       - name: Check generated map
         run: |
@@ -652,7 +660,7 @@ jobs:
           fi
 
       # --------------------------------------------------
-      # 18. GitHub Actions Artifactへ保存
+      # 19. GitHub Actions Artifactへ保存
       # --------------------------------------------------
       - name: Upload map artifact
         uses: actions/upload-artifact@v4
