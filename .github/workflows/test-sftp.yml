@@ -14,6 +14,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
             build-essential \
             cmake \
@@ -24,7 +25,8 @@ jobs:
             sshpass \
             libboost-all-dev \
             zlib1g-dev \
-            libpng-dev
+            libpng-dev \
+            libpng++-dev
 
       # --------------------------------------------------
       # 2. RingoNetworksからワールドアーカイブを取得
@@ -37,7 +39,9 @@ jobs:
 
           mkdir -p world
 
-          echo "=== Downloading world archive ==="
+          echo "=========================================="
+          echo " Downloading Minecraft world"
+          echo "=========================================="
 
           sshpass -e sftp \
             -o StrictHostKeyChecking=no \
@@ -50,6 +54,7 @@ jobs:
 
           echo
           echo "=== Downloaded archive ==="
+
           ls -lh world/world.tar.gz
 
       # --------------------------------------------------
@@ -61,20 +66,23 @@ jobs:
 
           mkdir -p world/extracted
 
-          echo "=== Extracting world ==="
+          echo "=========================================="
+          echo " Extracting Minecraft world"
+          echo "=========================================="
 
           tar -xzf world/world.tar.gz \
             -C world/extracted
 
           echo
           echo "=== Extracted files ==="
+
           find world/extracted \
             -maxdepth 3 \
             -type f \
             | head -100
 
       # --------------------------------------------------
-      # 4. level.dat と db を確認
+      # 4. ワールドを確認
       # --------------------------------------------------
       - name: Validate Minecraft world
         run: |
@@ -82,8 +90,9 @@ jobs:
 
           WORLD_DIR="world/extracted"
 
-          echo "=== World directory ==="
-          find "$WORLD_DIR" -maxdepth 2 -type f | head -100
+          echo "=========================================="
+          echo " Checking Minecraft world"
+          echo "=========================================="
 
           echo
           echo "=== level.dat ==="
@@ -102,14 +111,17 @@ jobs:
           if [ -d "$WORLD_DIR/db" ]; then
             echo "Found:"
             echo "$WORLD_DIR/db"
-
-            echo
-            echo "=== Number of LevelDB files ==="
-            find "$WORLD_DIR/db" -type f | wc -l
           else
             echo "ERROR: db directory was not found."
             exit 1
           fi
+
+          echo
+          echo "=== LevelDB file count ==="
+
+          find "$WORLD_DIR/db" \
+            -type f \
+            | wc -l
 
       # --------------------------------------------------
       # 5. bedrock-vizを取得
@@ -118,54 +130,82 @@ jobs:
         run: |
           set -e
 
+          echo "=========================================="
+          echo " Cloning bedrock-viz"
+          echo "=========================================="
+
           git clone --recursive \
             https://github.com/paulgrahek/bedrock-viz.git \
             bedrock-viz
 
           cd bedrock-viz
 
+          echo
           echo "=== bedrock-viz commit ==="
+
           git rev-parse HEAD
 
           echo
           echo "=== Submodule status ==="
+
           git submodule status
 
       # --------------------------------------------------
-      # 6. LevelDBの状態を確認
+      # 6. LevelDBパッチを適用
       # --------------------------------------------------
-      - name: Check LevelDB
+      - name: Apply bedrock-viz patches
         run: |
           set -e
 
           cd bedrock-viz
 
           echo "=========================================="
-          echo " LevelDB directory"
+          echo " Available patches"
           echo "=========================================="
 
-          ls -la third_party/leveldb
+          ls -lh patches/
 
           echo
           echo "=========================================="
-          echo " LevelDB git information"
+          echo " Applying LevelDB patch"
           echo "=========================================="
 
-          cd third_party/leveldb
-
-          git rev-parse HEAD || true
-          git log -1 --oneline || true
+          git apply -p0 \
+            patches/leveldb-1.22.patch
 
           echo
-          echo "=== Git status ==="
-          git status --short || true
-
-          cd ../..
+          echo "LevelDB patch applied successfully."
 
           echo
           echo "=========================================="
-          echo " Search: DecompressAllocator"
+          echo " Applying pugixml patch"
           echo "=========================================="
+
+          if [ -f patches/pugixml-disable-install.patch ]; then
+            git apply -p0 \
+              patches/pugixml-disable-install.patch
+
+            echo
+            echo "pugixml patch applied successfully."
+          else
+            echo "pugixml patch not found. Skipping."
+          fi
+
+      # --------------------------------------------------
+      # 7. LevelDBパッチ適用後の確認
+      # --------------------------------------------------
+      - name: Verify LevelDB patch
+        run: |
+          set -e
+
+          cd bedrock-viz
+
+          echo "=========================================="
+          echo " LevelDB after patch"
+          echo "=========================================="
+
+          echo
+          echo "=== DecompressAllocator ==="
 
           grep -RIn \
             "DecompressAllocator" \
@@ -173,9 +213,7 @@ jobs:
             || true
 
           echo
-          echo "=========================================="
-          echo " Search: decompress_allocator"
-          echo "=========================================="
+          echo "=== decompress_allocator ==="
 
           grep -RIn \
             "decompress_allocator" \
@@ -183,9 +221,7 @@ jobs:
             || true
 
           echo
-          echo "=========================================="
-          echo " Search: kZlibRawCompression"
-          echo "=========================================="
+          echo "=== kZlibRawCompression ==="
 
           grep -RIn \
             "kZlibRawCompression" \
@@ -193,97 +229,27 @@ jobs:
             || true
 
           echo
-          echo "=========================================="
-          echo " Search: zlib / compressor files"
-          echo "=========================================="
+          echo "=== decompress_allocator.h ==="
 
-          find third_party/leveldb \
-            -type f \
-            | grep -Ei 'compress|zlib' \
-            || true
-
-          echo
-          echo "=========================================="
-          echo " Search: ReadOptions"
-          echo "=========================================="
-
-          grep -RIn \
-            "struct ReadOptions\|class ReadOptions" \
-            third_party/leveldb/include \
-            third_party/leveldb \
-            || true
-
-          echo
-          echo "=========================================="
-          echo " Search: decompress_allocator in all repository"
-          echo "=========================================="
-
-          grep -RIn \
-            "decompress_allocator" \
-            . \
-            --exclude-dir=.git \
-            || true
-
-          echo
-          echo "=========================================="
-          echo " Search: kZlibRawCompression in all repository"
-          echo "=========================================="
-
-          grep -RIn \
-            "kZlibRawCompression" \
-            . \
-            --exclude-dir=.git \
-            || true
-
-      # --------------------------------------------------
-      # 7. LevelDBの既存パッチを確認
-      # --------------------------------------------------
-      - name: Inspect LevelDB patches
-        run: |
-          set -e
-
-          cd bedrock-viz
-
-          echo "=========================================="
-          echo " patches directory"
-          echo "=========================================="
-
-          if [ -d patches ]; then
-            find patches \
-              -maxdepth 3 \
-              -type f \
-              -print
+          if [ -f third_party/leveldb/include/leveldb/decompress_allocator.h ]; then
+            echo "FOUND:"
+            echo "third_party/leveldb/include/leveldb/decompress_allocator.h"
           else
-            echo "No patches directory found."
+            echo "ERROR: decompress_allocator.h was not found."
+            exit 1
           fi
 
           echo
           echo "=========================================="
-          echo " Search patches for LevelDB"
+          echo " Git status after patch"
           echo "=========================================="
 
-          grep -RIn \
-            -Ei "leveldb|decompress|zlib|compression" \
-            patches \
-            2>/dev/null \
-            || true
-
-          echo
-          echo "=========================================="
-          echo " Search repository for patch commands"
-          echo "=========================================="
-
-          grep -RIn \
-            -E "git apply|patch -p|apply.*patch" \
-            . \
-            --exclude-dir=.git \
-            2>/dev/null \
-            || true
+          git status --short
 
       # --------------------------------------------------
-      # 8. zlib_compressor.ccの#includeを確認・修正
+      # 8. zlib_compressor.ccのC++型定義を確認
       # --------------------------------------------------
-      - name: Patch zlib compressor include
+      - name: Fix zlib compressor include
         run: |
           set -e
 
@@ -291,13 +257,16 @@ jobs:
 
           FILE="third_party/leveldb/table/compressor/zlib_compressor.cc"
 
-          echo "=== Checking ==="
-          echo "$FILE"
+          echo "=========================================="
+          echo " Checking zlib compressor"
+          echo "=========================================="
 
           if [ -f "$FILE" ]; then
+
             echo
             echo "=== Before ==="
-            sed -n '1,40p' "$FILE"
+
+            sed -n '1,50p' "$FILE"
 
             python3 - <<'PY'
           from pathlib import Path
@@ -323,41 +292,139 @@ jobs:
 
             echo
             echo "=== After ==="
-            sed -n '1,40p' "$FILE"
+
+            sed -n '1,50p' "$FILE"
+
           else
             echo "zlib_compressor.cc not found."
           fi
 
       # --------------------------------------------------
-      # 9. CMakeLists.txt内のC++11指定を確認
+      # 9. libnbtplusplusのC++11指定をC++17へ変更
       # --------------------------------------------------
-      - name: Inspect CMake C++ standard
+      - name: Fix libnbtplusplus C++ standard
+        run: |
+          set -e
+
+          cd bedrock-viz
+
+          FILE="third_party/libnbtplusplus/CMakeLists.txt"
+
+          echo "=========================================="
+          echo " Checking libnbtplusplus CMake"
+          echo "=========================================="
+
+          if [ -f "$FILE" ]; then
+
+            echo
+            echo "=== Before ==="
+
+            grep -n \
+              -E "std=c\+\+|CXX_STANDARD" \
+              "$FILE" \
+              || true
+
+            python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "third_party/libnbtplusplus/CMakeLists.txt"
+          )
+
+          text = path.read_text()
+
+          text = text.replace(
+              "-std=c++11",
+              "-std=c++17"
+          )
+
+          path.write_text(text)
+
+          print("libnbtplusplus C++ standard updated.")
+          PY
+
+            echo
+            echo "=== After ==="
+
+            grep -n \
+              -E "std=c\+\+|CXX_STANDARD" \
+              "$FILE" \
+              || true
+
+          else
+            echo "libnbtplusplus CMakeLists.txt not found."
+          fi
+
+      # --------------------------------------------------
+      # 10. CMakeLists.txtをC++17に設定
+      # --------------------------------------------------
+      - name: Configure CMake settings
         run: |
           set -e
 
           cd bedrock-viz
 
           echo "=========================================="
-          echo " C++ standard settings"
+          echo " Configuring CMake C++ standard"
           echo "=========================================="
 
-          grep -RIn \
-            -E "CXX_STANDARD|std=c\+\+11|std=c\+\+14|std=c\+\+17" \
-            . \
-            --include="CMakeLists.txt" \
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("CMakeLists.txt")
+
+          text = path.read_text()
+
+          settings = """
+          set(CMAKE_CXX_STANDARD 17)
+          set(CMAKE_CXX_STANDARD_REQUIRED ON)
+          set(CMAKE_CXX_EXTENSIONS OFF)
+          """
+
+          if "set(CMAKE_CXX_STANDARD 17)" not in text:
+              text = text.replace(
+                  "project(bedrock-viz",
+                  settings + "\nproject(bedrock-viz"
+              )
+
+          path.write_text(text)
+
+          print("Top-level CMakeLists.txt updated.")
+          PY
+
+          echo
+          echo "=== C++ standard settings ==="
+
+          grep -n \
+            -E "CXX_STANDARD|CXX_EXTENSIONS" \
+            CMakeLists.txt \
             || true
 
       # --------------------------------------------------
-      # 10. C++17を強制
+      # 11. ビルドディレクトリ作成
       # --------------------------------------------------
-      - name: Configure CMake
+      - name: Create build directory
         run: |
           set -e
 
           cd bedrock-viz
 
-          mkdir -p build
-          cd build
+          rm -rf build
+
+          mkdir build
+
+      # --------------------------------------------------
+      # 12. CMake
+      # --------------------------------------------------
+      - name: Run CMake
+        run: |
+          set -e
+
+          cd bedrock-viz/build
+
+          echo "=========================================="
+          echo " Running CMake"
+          echo "=========================================="
 
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
@@ -368,7 +435,7 @@ jobs:
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       # --------------------------------------------------
-      # 11. CMakeが実際に使うコンパイル設定を確認
+      # 13. C++17設定を確認
       # --------------------------------------------------
       - name: Verify compiler settings
         run: |
@@ -401,35 +468,44 @@ jobs:
           echo "=========================================="
 
           if [ -f compile_commands.json ]; then
-            grep -o -- "-std=c++[0-9]*" \
+
+            grep -o \
+              -- "-std=c++[0-9]*" \
               compile_commands.json \
               | sort \
               | uniq -c \
               || true
 
             echo
-            echo "=== Any C++11 compile commands? ==="
+            echo "=== C++11 commands ==="
 
-            if grep -n -- "-std=c++11" compile_commands.json; then
-              echo
+            if grep -n \
+              -- "-std=c++11" \
+              compile_commands.json; then
+
               echo "WARNING: C++11 command detected."
+
             else
+
               echo "No C++11 compile command detected."
+
             fi
 
             echo
-            echo "=== C++17 compile commands ==="
+            echo "=== C++17 commands ==="
 
-            grep -n -- "-std=c++17" \
+            grep -n \
+              -- "-std=c++17" \
               compile_commands.json \
               | head -20 \
               || true
+
           else
             echo "compile_commands.json not found."
           fi
 
       # --------------------------------------------------
-      # 12. bedrock-vizをビルド
+      # 14. bedrock-vizをビルド
       # --------------------------------------------------
       - name: Build bedrock-viz
         run: |
@@ -447,7 +523,7 @@ jobs:
             --verbose
 
       # --------------------------------------------------
-      # 13. 実行ファイルを探す
+      # 15. 実行ファイルを探す
       # --------------------------------------------------
       - name: Find bedrock-viz executable
         run: |
@@ -455,7 +531,9 @@ jobs:
 
           cd bedrock-viz
 
-          echo "=== Executables ==="
+          echo "=========================================="
+          echo " Searching executable"
+          echo "=========================================="
 
           find . \
             -type f \
@@ -464,7 +542,7 @@ jobs:
             -print
 
       # --------------------------------------------------
-      # 14. bedrock-vizでマップ生成
+      # 16. マップ生成
       # --------------------------------------------------
       - name: Generate map
         run: |
@@ -472,7 +550,8 @@ jobs:
 
           WORLD_DIR="$GITHUB_WORKSPACE/world/extracted"
 
-          mkdir -p "$GITHUB_WORKSPACE/map"
+          mkdir -p \
+            "$GITHUB_WORKSPACE/map"
 
           echo "=========================================="
           echo " World"
@@ -481,12 +560,16 @@ jobs:
           echo "$WORLD_DIR"
 
           echo
-          echo "=========================================="
-          echo " World files"
-          echo "=========================================="
+          echo "=== level.dat ==="
 
-          ls -lh "$WORLD_DIR/level.dat"
-          ls -ld "$WORLD_DIR/db"
+          ls -lh \
+            "$WORLD_DIR/level.dat"
+
+          echo
+          echo "=== db ==="
+
+          ls -ld \
+            "$WORLD_DIR/db"
 
           echo
           echo "=========================================="
@@ -500,23 +583,29 @@ jobs:
             "$GITHUB_WORKSPACE/bedrock-viz/build/bin/bedrock-viz" \
             "$GITHUB_WORKSPACE/bedrock-viz/bedrock-viz"
           do
+
             if [ -x "$candidate" ]; then
               BEDROCK_VIZ="$candidate"
               break
             fi
+
           done
 
           if [ -z "$BEDROCK_VIZ" ]; then
+
             echo "ERROR: bedrock-viz executable was not found."
 
-            find "$GITHUB_WORKSPACE/bedrock-viz/build" \
+            find \
+              "$GITHUB_WORKSPACE/bedrock-viz/build" \
               -type f \
               -executable \
               -print
 
             exit 1
+
           fi
 
+          echo
           echo "Using:"
           echo "$BEDROCK_VIZ"
 
@@ -531,7 +620,7 @@ jobs:
             --html-most
 
       # --------------------------------------------------
-      # 15. 生成結果を確認
+      # 17. マップ生成結果確認
       # --------------------------------------------------
       - name: Check generated map
         run: |
@@ -542,6 +631,7 @@ jobs:
           echo "=========================================="
 
           if [ -d map ]; then
+
             find map \
               -maxdepth 4 \
               -type f \
@@ -553,13 +643,16 @@ jobs:
             find map \
               -type f \
               | wc -l
+
           else
+
             echo "ERROR: map directory was not created."
             exit 1
+
           fi
 
       # --------------------------------------------------
-      # 16. GitHub Actions Artifactへ保存
+      # 18. GitHub Actions Artifactへ保存
       # --------------------------------------------------
       - name: Upload map artifact
         uses: actions/upload-artifact@v4
