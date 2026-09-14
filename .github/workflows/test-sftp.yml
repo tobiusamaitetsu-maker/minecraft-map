@@ -26,6 +26,7 @@ jobs:
             zlib1g-dev \
             libboost-all-dev \
             libpugixml-dev \
+            libpng-dev \
             openssh-client \
             lftp
 
@@ -77,7 +78,12 @@ jobs:
             -C "$GITHUB_WORKSPACE/world"
 
           echo "=== Extracted files ==="
-          find "$GITHUB_WORKSPACE/world" -maxdepth 2 -type f | head -50
+
+          find \
+            "$GITHUB_WORKSPACE/world" \
+            -maxdepth 2 \
+            -type f \
+            | head -50
 
       # ==========================================
       # 4. Locate level.dat
@@ -90,7 +96,8 @@ jobs:
           echo " Locating level.dat"
           echo "=========================================="
 
-          LEVEL_DAT=$(find "$GITHUB_WORKSPACE/world" \
+          LEVEL_DAT=$(find \
+            "$GITHUB_WORKSPACE/world" \
             -name level.dat \
             -type f \
             | head -1)
@@ -109,6 +116,7 @@ jobs:
           echo "$WORLD_DIR"
 
           echo "=== World contents ==="
+
           ls -lah "$WORLD_DIR"
 
           if [ ! -d "$WORLD_DIR/db" ]; then
@@ -127,7 +135,8 @@ jobs:
           echo " Cloning bedrock-viz"
           echo "=========================================="
 
-          git clone --recursive \
+          git clone \
+            --recursive \
             https://github.com/paulgrahek/bedrock-viz.git \
             "$GITHUB_WORKSPACE/bedrock-viz"
 
@@ -136,6 +145,7 @@ jobs:
           git submodule update --init --recursive
 
           echo "=== bedrock-viz commit ==="
+
           git rev-parse HEAD
 
       # ==========================================
@@ -151,6 +161,7 @@ jobs:
           echo "=========================================="
 
           git apply -p0 patches/leveldb-1.22.patch
+
           git apply -p0 patches/pugixml-disable-install.patch
 
           echo "=== Verify LevelDB patch ==="
@@ -166,7 +177,7 @@ jobs:
             || true
 
       # ==========================================
-      # 7. Fix zlib_compressor.cc
+      # 7. Fix zlib compressor include
       # ==========================================
       - name: Fix zlib compressor include
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -184,24 +195,30 @@ jobs:
           fi
 
           echo "=== Header check ==="
+
           head -20 "$FILE"
 
       # ==========================================
-      # 8. Fix libnbtplusplus C++17
+      # 8. Check libnbtplusplus
       # ==========================================
-      - name: Fix libnbtplusplus C++17
+      - name: Check libnbtplusplus
         working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
 
           echo "=========================================="
-          echo " Fixing libnbtplusplus C++17"
+          echo " Checking libnbtplusplus"
           echo "=========================================="
 
           find . \
             -path '*libnbtplusplus*' \
             -type f \
-            \( -name '*.h' -o -name '*.hpp' -o -name '*.cc' -o -name '*.cpp' \) \
+            \( \
+              -name '*.h' \
+              -o -name '*.hpp' \
+              -o -name '*.cc' \
+              -o -name '*.cpp' \
+            \) \
             -print0 \
             | xargs -0 grep -l \
               'std::filesystem\|std::make_unique' \
@@ -225,15 +242,25 @@ jobs:
           echo "=========================================="
 
           if grep -q "CMAKE_CXX_STANDARD" CMakeLists.txt; then
+
             sed -i \
               's/set(CMAKE_CXX_STANDARD [0-9][0-9]*)/set(CMAKE_CXX_STANDARD 17)/' \
               CMakeLists.txt
+
           else
-            sed -i '1i set(CMAKE_CXX_STANDARD 17)' CMakeLists.txt
+
+            sed -i \
+              '1i set(CMAKE_CXX_STANDARD 17)' \
+              CMakeLists.txt
+
           fi
 
           echo "=== CMake C++ standard ==="
-          grep -n "CMAKE_CXX_STANDARD" CMakeLists.txt || true
+
+          grep -n \
+            "CMAKE_CXX_STANDARD" \
+            CMakeLists.txt \
+            || true
 
       # ==========================================
       # 10. Configure build
@@ -294,7 +321,8 @@ jobs:
 
           echo "=== Built files ==="
 
-          find build \
+          find \
+            build \
             -maxdepth 3 \
             -type f \
             -executable \
@@ -317,17 +345,19 @@ jobs:
             -type f \
             | head -1)
 
-          LEVELDB_INCLUDE=$(dirname "$(dirname "$LEVELDB_HEADER")")
-
-          LEVELDB_LIBRARY=$(find build \
-            -name libleveldb.a \
-            -type f \
-            | head -1)
-
           if [ -z "$LEVELDB_HEADER" ]; then
             echo "ERROR: LevelDB header was not found."
             exit 1
           fi
+
+          LEVELDB_INCLUDE=$(dirname \
+            "$(dirname "$LEVELDB_HEADER")")
+
+          LEVELDB_LIBRARY=$(find \
+            build \
+            -name libleveldb.a \
+            -type f \
+            | head -1)
 
           if [ -z "$LEVELDB_LIBRARY" ]; then
             echo "ERROR: libleveldb.a was not found."
@@ -338,8 +368,13 @@ jobs:
           echo "LEVELDB_INCLUDE=$LEVELDB_INCLUDE"
           echo "LEVELDB_LIBRARY=$LEVELDB_LIBRARY"
 
-          echo "LEVELDB_INCLUDE=$GITHUB_WORKSPACE/bedrock-viz/$LEVELDB_INCLUDE" >> "$GITHUB_ENV"
-          echo "LEVELDB_LIBRARY=$GITHUB_WORKSPACE/bedrock-viz/$LEVELDB_LIBRARY" >> "$GITHUB_ENV"
+          echo \
+            "LEVELDB_INCLUDE=$GITHUB_WORKSPACE/bedrock-viz/$LEVELDB_INCLUDE" \
+            >> "$GITHUB_ENV"
+
+          echo \
+            "LEVELDB_LIBRARY=$GITHUB_WORKSPACE/bedrock-viz/$LEVELDB_LIBRARY" \
+            >> "$GITHUB_ENV"
 
       # ==========================================
       # 14. Build LevelDB inspection tool
@@ -354,12 +389,16 @@ jobs:
           echo "=========================================="
 
           echo "=== LevelDB header ==="
-          echo "${LEVELDB_INCLUDE}/leveldb/db.h"
+
+          echo \
+            "${LEVELDB_INCLUDE}/leveldb/db.h"
 
           echo "=== LevelDB include directory ==="
+
           echo "$LEVELDB_INCLUDE"
 
           echo "=== LevelDB library ==="
+
           echo "$LEVELDB_LIBRARY"
 
           cat > /tmp/inspect_leveldb.cpp <<'EOF'
@@ -370,6 +409,7 @@ jobs:
           #include <cstdint>
           #include <cstring>
           #include <memory>
+          #include <algorithm>
 
           #include "leveldb/db.h"
           #include "leveldb/iterator.h"
@@ -383,9 +423,12 @@ jobs:
               size_t n = std::min(size, max_size);
 
               for (size_t i = 0; i < n; ++i) {
+
                   unsigned int v =
                       static_cast<unsigned int>(
-                          static_cast<unsigned char>(data[i])
+                          static_cast<unsigned char>(
+                              data[i]
+                          )
                       );
 
                   std::cout
@@ -406,6 +449,7 @@ jobs:
           int main(int argc, char** argv) {
 
               if (argc != 2) {
+
                   std::cerr
                       << "Usage: inspect_leveldb <db_path>"
                       << std::endl;
@@ -418,6 +462,7 @@ jobs:
               leveldb::DB* db = nullptr;
 
               leveldb::Options options;
+
               options.create_if_missing = false;
 
               leveldb::Status status =
@@ -428,6 +473,7 @@ jobs:
                   );
 
               if (!status.ok()) {
+
                   std::cerr
                       << "Failed to open LevelDB: "
                       << status.ToString()
@@ -455,10 +501,14 @@ jobs:
 
               std::cout << std::endl;
 
-              std::vector<uint64_t> value1_counts(256, 0);
-              std::vector<uint64_t> version_counts(256, 0);
+              std::vector<uint64_t>
+                  value1_counts(256, 0);
+
+              std::vector<uint64_t>
+                  version_counts(256, 0);
 
               uint64_t total_records = 0;
+
               uint64_t subchunk_records = 0;
 
               std::unique_ptr<leveldb::Iterator> it(
@@ -467,9 +517,11 @@ jobs:
                   )
               );
 
-              for (it->SeekToFirst();
-                   it->Valid();
-                   it->Next()) {
+              for (
+                  it->SeekToFirst();
+                  it->Valid();
+                  it->Next()
+              ) {
 
                   const leveldb::Slice key =
                       it->key();
@@ -480,6 +532,7 @@ jobs:
                   ++total_records;
 
                   if (value.size() >= 1) {
+
                       uint8_t version =
                           static_cast<uint8_t>(
                               value.data()[0]
@@ -488,18 +541,6 @@ jobs:
                       ++version_counts[version];
                   }
 
-                  /*
-                   * Bedrock overworld subchunk keys:
-                   *
-                   * 8 bytes  : chunk X
-                   * 4 bytes  : chunk Z
-                   * 1 byte   : dimension / subchunk tag
-                   * 1 byte   : subchunk Y
-                   *
-                   * The exact key layout is intentionally
-                   * checked conservatively here.
-                   */
-
                   if (key.size() >= 10) {
 
                       const unsigned char* k =
@@ -507,10 +548,6 @@ jobs:
                               const unsigned char*
                           >(key.data());
 
-                      /*
-                       * Tag 0x2f ('/') is the subchunk
-                       * record tag used by Bedrock.
-                       */
                       if (k[8] == 0x2f) {
 
                           ++subchunk_records;
@@ -523,6 +560,7 @@ jobs:
                           uint8_t second = 0;
 
                           if (value.size() >= 1) {
+
                               version =
                                   static_cast<uint8_t>(
                                       value.data()[0]
@@ -530,6 +568,7 @@ jobs:
                           }
 
                           if (value.size() >= 2) {
+
                               second =
                                   static_cast<uint8_t>(
                                       value.data()[1]
@@ -558,17 +597,23 @@ jobs:
 
                           std::cout
                               << "version       = "
-                              << static_cast<int>(version)
+                              << static_cast<int>(
+                                  version
+                              )
                               << std::endl;
 
                           std::cout
                               << "value[1]      = "
-                              << static_cast<int>(second)
+                              << static_cast<int>(
+                                  second
+                              )
                               << std::endl;
 
                           std::cout
                               << "subchunk Y    = "
-                              << static_cast<int>(subchunk_y)
+                              << static_cast<int>(
+                                  subchunk_y
+                              )
                               << std::endl;
 
                           std::cout
@@ -584,21 +629,15 @@ jobs:
                           std::cout
                               << std::endl;
 
-                          /*
-                           * Highlight potentially interesting
-                           * values.
-                           */
                           if (second == 5) {
+
                               std::cout
                                   << "*** FOUND value[1] = 5 ***"
                                   << std::endl;
                           }
 
-                          /*
-                           * Limit detailed output so the GitHub
-                           * Actions log does not become enormous.
-                           */
                           if (subchunk_records >= 200) {
+
                               std::cout
                                   << std::endl
                                   << "Reached 200 subchunk records."
@@ -611,6 +650,7 @@ jobs:
               }
 
               if (!it->status().ok()) {
+
                   std::cerr
                       << "Iterator error: "
                       << it->status().ToString()
@@ -651,9 +691,11 @@ jobs:
                   << "=== Value[0] version distribution ==="
                   << std::endl;
 
-              for (size_t i = 0;
-                   i < version_counts.size();
-                   ++i) {
+              for (
+                  size_t i = 0;
+                  i < version_counts.size();
+                  ++i
+              ) {
 
                   if (version_counts[i] != 0) {
 
@@ -672,9 +714,11 @@ jobs:
                   << "=== Value[1] distribution ==="
                   << std::endl;
 
-              for (size_t i = 0;
-                   i < value1_counts.size();
-                   ++i) {
+              for (
+                  size_t i = 0;
+                  i < value1_counts.size();
+                  ++i
+              ) {
 
                   if (value1_counts[i] != 0) {
 
@@ -750,7 +794,7 @@ jobs:
             /usr/local/share/bedrock-viz/data/bedrock_viz.xml
 
       # ==========================================
-      # 17. Verify installed files
+      # 17. Verify bedrock-viz installation
       # ==========================================
       - name: Verify bedrock-viz installation
         run: |
@@ -781,7 +825,7 @@ jobs:
           echo "bedrock-viz installation OK."
 
       # ==========================================
-      # 18. Run bedrock-viz
+      # 18. Generate map
       # ==========================================
       - name: Generate map
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -798,9 +842,11 @@ jobs:
           BEDROCK_VIZ="$GITHUB_WORKSPACE/bedrock-viz/build/bedrock-viz"
 
           if [ ! -x "$BEDROCK_VIZ" ]; then
+
             echo "ERROR: bedrock-viz executable not found."
 
-            find "$GITHUB_WORKSPACE/bedrock-viz/build" \
+            find \
+              "$GITHUB_WORKSPACE/bedrock-viz/build" \
               -type f \
               -executable \
               -print
@@ -855,7 +901,9 @@ jobs:
           echo "Generated files: $FILE_COUNT"
 
           if [ "$FILE_COUNT" -eq 0 ]; then
+
             echo "ERROR: No map files were generated."
+
             exit 1
           fi
 
