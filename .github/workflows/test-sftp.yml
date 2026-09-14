@@ -10,7 +10,10 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
+          set -e
+
           sudo apt-get update
+
           sudo apt-get install -y \
             build-essential \
             cmake \
@@ -69,7 +72,7 @@ jobs:
         run: |
           set -e
 
-          WORLD_DIR="world/extracted"
+          WORLD_DIR="$GITHUB_WORKSPACE/world/extracted"
 
           echo "=========================================="
           echo " Checking Minecraft world"
@@ -99,510 +102,10 @@ jobs:
 
           echo
           echo "=== LevelDB file count ==="
-          find "$WORLD_DIR/db" -type f | wc -l
 
-      # ------------------------------------------------------------
-      # New diagnostic step
-      # ------------------------------------------------------------
-      - name: Inspect LevelDB SubChunk data
-        run: |
-          set -e
-
-          WORLD_DIR="$GITHUB_WORKSPACE/world/extracted"
-          DB_DIR="$WORLD_DIR/db"
-
-          echo "=========================================="
-          echo " Inspecting LevelDB SubChunk data"
-          echo "=========================================="
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import struct
-          import collections
-
-          db_dir = Path("world/extracted/db")
-
-          print()
-          print("=== Database directory ===")
-          print(db_dir)
-
-          print()
-          print("=== DB files ===")
-
-          files = list(db_dir.rglob("*"))
-
-          for path in files[:100]:
-              if path.is_file():
-                  print(path)
-
-          print()
-          print("=== Looking for LevelDB MANIFEST ===")
-
-          manifests = list(db_dir.rglob("MANIFEST-*"))
-
-          if manifests:
-              for manifest in manifests:
-                  print("FOUND:", manifest)
-          else:
-              print("No MANIFEST file found.")
-
-          print()
-          print("=== Looking for LOG files ===")
-
-          logs = list(db_dir.glob("LOG*"))
-
-          for log in logs:
-              print("LOG:", log)
-
-          print()
-          print("=== Raw SubChunk key candidates ===")
-
-          #
-          # A Bedrock overworld SubChunkPrefix key is approximately:
-          #
-          #   int32 chunkX
-          #   int32 chunkZ
-          #   '/'
-          #   int8 subchunkY
-          #
-          # We cannot directly iterate LevelDB using Python stdlib,
-          # therefore this step scans binary DB files for the
-          # SubChunkPrefix marker '/' and prints nearby bytes.
-          #
-
-          slash_hits = 0
-          version_counter = collections.Counter()
-
-          interesting = []
-
-          for path in db_dir.rglob("*"):
-              if not path.is_file():
-                  continue
-
-              try:
-                  data = path.read_bytes()
-              except Exception:
-                  continue
-
-              #
-              # Limit very large files so diagnostics do not consume
-              # the entire GitHub Actions log.
-              #
-              if len(data) > 200 * 1024 * 1024:
-                  print(
-                      "Skipping very large DB file:",
-                      path,
-                      "size=",
-                      len(data)
-                  )
-                  continue
-
-              for i in range(len(data)):
-                  if data[i] != 0x2f:
-                      continue
-
-                  slash_hits += 1
-
-                  #
-                  # The slash itself may occur in arbitrary binary
-                  # data, so only record candidates where enough
-                  # surrounding bytes exist.
-                  #
-                  if i + 2 < len(data):
-                      candidate = data[i + 1]
-
-                      version_counter[candidate] += 1
-
-                      if candidate in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
-                          if len(interesting) < 100:
-                              start = max(0, i - 12)
-                              end = min(len(data), i + 24)
-
-                              interesting.append(
-                                  (
-                                      str(path),
-                                      i,
-                                      data[start:end].hex()
-                                  )
-                              )
-
-          print()
-          print("=== Slash candidates ===")
-          print("Total:", slash_hits)
-
-          print()
-          print("=== Byte after '/' candidates ===")
-
-          for value, count in sorted(
-              version_counter.items(),
-              key=lambda x: (-x[1], x[0])
-          )[:50]:
-              print(
-                  "0x%02x" % value,
-                  "decimal=",
-                  value,
-                  "count=",
-                  count
-              )
-
-          print()
-          print("=== Possible SubChunk records ===")
-
-          for path, offset, hex_data in interesting:
-              print()
-              print("FILE:", path)
-              print("OFFSET:", offset)
-              print("DATA:", hex_data)
-
-          print()
-          print("=== Diagnostic note ===")
-          print(
-              "This is a raw binary diagnostic only. "
-              "The scan is intentionally conservative because "
-              "LevelDB files are SSTable files rather than flat "
-              "key/value files."
-          )
-          PY
-
-      # ------------------------------------------------------------
-      # Install a small LevelDB inspection program
-      # ------------------------------------------------------------
-      - name: Build LevelDB inspection tool
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo " Building LevelDB inspection tool"
-          echo "=========================================="
-
-          cat > /tmp/inspect_leveldb.cpp <<'CPP'
-          #include <iostream>
-          #include <string>
-          #include <vector>
-          #include <iomanip>
-          #include <cstdint>
-
-          #include "leveldb/db.h"
-          #include "leveldb/iterator.h"
-          #include "leveldb/options.h"
-
-          static void printHex(
-              const std::string& data,
-              size_t maxBytes = 64
-          ) {
-              size_t count = data.size();
-
-              if (count > maxBytes) {
-                  count = maxBytes;
-              }
-
-              for (size_t i = 0; i < count; ++i) {
-                  unsigned int value =
-                      static_cast<unsigned char>(data[i]);
-
-                  std::cout
-                      << std::hex
-                      << std::setw(2)
-                      << std::setfill('0')
-                      << value
-                      << " ";
-              }
-
-              std::cout << std::dec;
-
-              if (data.size() > maxBytes) {
-                  std::cout << "...";
-              }
-          }
-
-          int main(int argc, char** argv) {
-              if (argc < 2) {
-                  std::cerr
-                      << "Usage: inspect_leveldb <db_path>"
-                      << std::endl;
-
-                  return 1;
-              }
-
-              const std::string path = argv[1];
-
-              leveldb::Options options;
-              options.create_if_missing = false;
-
-              leveldb::DB* db = nullptr;
-
-              leveldb::Status status =
-                  leveldb::DB::Open(
-                      options,
-                      path,
-                      &db
-                  );
-
-              if (!status.ok()) {
-                  std::cerr
-                      << "Failed to open LevelDB: "
-                      << status.ToString()
-                      << std::endl;
-
-                  return 2;
-              }
-
-              std::cout
-                  << "=========================================="
-                  << std::endl;
-
-              std::cout
-                  << " LevelDB SubChunk inspection"
-                  << std::endl;
-
-              std::cout
-                  << "=========================================="
-                  << std::endl;
-
-              std::cout
-                  << "DB: "
-                  << path
-                  << std::endl;
-
-              std::unique_ptr<leveldb::Iterator> it(
-                  db->NewIterator(leveldb::ReadOptions())
-              );
-
-              size_t total = 0;
-              size_t subchunks = 0;
-
-              std::vector<size_t> cdataValues(256, 0);
-
-              for (
-                  it->SeekToFirst();
-                  it->Valid();
-                  it->Next()
-              ) {
-                  ++total;
-
-                  const std::string& key = it->key().ToString();
-                  const std::string& value =
-                      it->value().ToString();
-
-                  //
-                  // Bedrock SubChunkPrefix:
-                  //
-                  // int32 x
-                  // int32 z
-                  // '/'
-                  // subchunkY
-                  //
-                  // Overworld key therefore normally has
-                  // '/' at byte 8.
-                  //
-
-                  if (key.size() >= 10 &&
-                      static_cast<unsigned char>(key[8]) == 0x2f) {
-
-                      ++subchunks;
-
-                      if (value.size() >= 2) {
-                          //
-                          // value[0] = SubChunk version
-                          // value[1] = storage count /
-                          //            cdata[1] depending on
-                          //            the parser being used
-                          //
-
-                          unsigned int version =
-                              static_cast<unsigned char>(value[0]);
-
-                          unsigned int second =
-                              static_cast<unsigned char>(value[1]);
-
-                          if (second < 256) {
-                              cdataValues[second]++;
-                          }
-
-                          if (
-                              second == 5 ||
-                              second == 0 ||
-                              second == 1 ||
-                              second == 2 ||
-                              second == 3 ||
-                              second == 4 ||
-                              second == 6 ||
-                              second == 7 ||
-                              second == 8 ||
-                              second == 9
-                          ) {
-                              std::cout
-                                  << std::endl
-                                  << "SubChunk candidate"
-                                  << std::endl;
-
-                              std::cout
-                                  << "  key size: "
-                                  << key.size()
-                                  << std::endl;
-
-                              std::cout
-                                  << "  value size: "
-                                  << value.size()
-                                  << std::endl;
-
-                              std::cout
-                                  << "  version: "
-                                  << version
-                                  << std::endl;
-
-                              std::cout
-                                  << "  value[1]: "
-                                  << second
-                                  << std::endl;
-
-                              std::cout
-                                  << "  value hex: ";
-
-                              printHex(value, 96);
-
-                              std::cout
-                                  << std::endl;
-
-                              //
-                              // Print chunk coordinates.
-                              //
-                              if (key.size() >= 9) {
-                                  int32_t x = 0;
-                                  int32_t z = 0;
-
-                                  std::memcpy(
-                                      &x,
-                                      key.data(),
-                                      sizeof(int32_t)
-                                  );
-
-                                  std::memcpy(
-                                      &z,
-                                      key.data() + 4,
-                                      sizeof(int32_t)
-                                  );
-
-                                  std::cout
-                                      << "  chunk X: "
-                                      << x
-                                      << std::endl;
-
-                                  std::cout
-                                      << "  chunk Z: "
-                                      << z
-                                      << std::endl;
-                              }
-
-                              unsigned int y =
-                                  static_cast<unsigned char>(
-                                      key[9]
-                                  );
-
-                              std::cout
-                                  << "  subchunk Y byte: "
-                                  << y
-                                  << std::endl;
-                          }
-                      }
-                  }
-              }
-
-              if (!it->status().ok()) {
-                  std::cerr
-                      << "Iterator error: "
-                      << it->status().ToString()
-                      << std::endl;
-              }
-
-              std::cout
-                  << std::endl
-                  << "=========================================="
-                  << std::endl;
-
-              std::cout
-                  << " Summary"
-                  << std::endl;
-
-              std::cout
-                  << "=========================================="
-                  << std::endl;
-
-              std::cout
-                  << "Total LevelDB records: "
-                  << total
-                  << std::endl;
-
-              std::cout
-                  << "SubChunk candidates: "
-                  << subchunks
-                  << std::endl;
-
-              std::cout
-                  << std::endl
-                  << "value[1] distribution:"
-                  << std::endl;
-
-              for (size_t i = 0; i < 256; ++i) {
-                  if (cdataValues[i] == 0) {
-                      continue;
-                  }
-
-                  std::cout
-                      << "  "
-                      << i
-                      << " : "
-                      << cdataValues[i]
-                      << std::endl;
-              }
-
-              delete db;
-
-              return 0;
-          }
-          CPP
-
-          #
-          # Add the missing cstring include used by memcpy.
-          #
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("/tmp/inspect_leveldb.cpp")
-          text = path.read_text()
-
-          if "#include <cstring>" not in text:
-              text = text.replace(
-                  "#include <cstdint>",
-                  "#include <cstdint>\n#include <cstring>"
-              )
-
-          path.write_text(text)
-          PY
-
-          g++ \
-            -std=c++17 \
-            -O2 \
-            -I"$GITHUB_WORKSPACE/bedrock-viz/third_party/leveldb/include" \
-            /tmp/inspect_leveldb.cpp \
-            "$GITHUB_WORKSPACE/bedrock-viz/build/third_party/leveldb/libleveldb.a" \
-            -pthread \
-            -o /tmp/inspect_leveldb
-
-          echo
-          echo "Inspection tool built successfully."
-
-      - name: Inspect actual LevelDB records
-        run: |
-          set -e
-
-          DB_DIR="$GITHUB_WORKSPACE/world/extracted/db"
-
-          echo "=========================================="
-          echo " Inspecting actual LevelDB records"
-          echo "=========================================="
-
-          /tmp/inspect_leveldb "$DB_DIR"
+          find "$WORLD_DIR/db" \
+            -type f \
+            | wc -l
 
       - name: Clone bedrock-viz
         run: |
@@ -620,10 +123,12 @@ jobs:
 
           echo
           echo "=== bedrock-viz commit ==="
+
           git rev-parse HEAD
 
           echo
           echo "=== Submodule status ==="
+
           git submodule status
 
       - name: Apply bedrock-viz patches
@@ -673,26 +178,34 @@ jobs:
 
           echo
           echo "=== DecompressAllocator ==="
-          grep -RIn "DecompressAllocator" third_party/leveldb || true
+
+          grep -RIn \
+            "DecompressAllocator" \
+            third_party/leveldb \
+            || true
 
           echo
           echo "=== decompress_allocator ==="
-          grep -RIn "decompress_allocator" third_party/leveldb || true
+
+          grep -RIn \
+            "decompress_allocator" \
+            third_party/leveldb \
+            || true
 
           echo
           echo "=== kZlibRawCompression ==="
-          grep -RIn "kZlibRawCompression" third_party/leveldb || true
+
+          grep -RIn \
+            "kZlibRawCompression" \
+            third_party/leveldb \
+            || true
 
           echo
           echo "=== decompress_allocator.h ==="
 
-          if [ -f "third_party/leveldb/include/leveldb/decompress_allocator.h" ]; then
-            echo "FOUND:"
-            echo "third_party/leveldb/include/leveldb/decompress_allocator.h"
-          else
-            echo "ERROR: decompress_allocator.h was not found."
-            exit 1
-          fi
+          find third_party/leveldb \
+            -name "decompress_allocator.h" \
+            -print
 
           echo
           echo "=========================================="
@@ -714,14 +227,19 @@ jobs:
           echo "=========================================="
 
           if [ -f "$FILE" ]; then
+
             echo
             echo "=== Before ==="
+
             sed -n '1,50p' "$FILE"
 
             python3 - <<'PY'
           from pathlib import Path
 
-          path = Path("third_party/leveldb/table/compressor/zlib_compressor.cc")
+          path = Path(
+              "third_party/leveldb/table/compressor/zlib_compressor.cc"
+          )
+
           text = path.read_text()
 
           if "#include <cstdint>" not in text:
@@ -729,7 +247,9 @@ jobs:
                   "#include <zlib.h>",
                   "#include <zlib.h>\n#include <cstdint>"
               )
+
               path.write_text(text)
+
               print("Added <cstdint>.")
           else:
               print("<cstdint> already exists.")
@@ -737,7 +257,9 @@ jobs:
 
             echo
             echo "=== After ==="
+
             sed -n '1,50p' "$FILE"
+
           else
             echo "zlib_compressor.cc not found."
           fi
@@ -755,24 +277,44 @@ jobs:
           echo "=========================================="
 
           if [ -f "$FILE" ]; then
+
             echo
             echo "=== Before ==="
-            grep -n -E "std=c\+\+|CXX_STANDARD" "$FILE" || true
+
+            grep -n \
+              -E "std=c\+\+|CXX_STANDARD" \
+              "$FILE" \
+              || true
 
             python3 - <<'PY'
           from pathlib import Path
 
-          path = Path("third_party/libnbtplusplus/CMakeLists.txt")
+          path = Path(
+              "third_party/libnbtplusplus/CMakeLists.txt"
+          )
+
           text = path.read_text()
-          text = text.replace("-std=c++11", "-std=c++17")
+
+          text = text.replace(
+              "-std=c++11",
+              "-std=c++17"
+          )
+
           path.write_text(text)
 
-          print("libnbtplusplus C++ standard updated.")
+          print(
+              "libnbtplusplus C++ standard updated."
+          )
           PY
 
             echo
             echo "=== After ==="
-            grep -n -E "std=c\+\+|CXX_STANDARD" "$FILE" || true
+
+            grep -n \
+              -E "std=c\+\+|CXX_STANDARD" \
+              "$FILE" \
+              || true
+
           else
             echo "libnbtplusplus CMakeLists.txt not found."
           fi
@@ -791,9 +333,11 @@ jobs:
           from pathlib import Path
 
           path = Path("CMakeLists.txt")
+
           text = path.read_text()
 
           if "set(CMAKE_CXX_STANDARD 17)" not in text:
+
               text = text.replace(
                   "project(bedrock-viz",
                   "set(CMAKE_CXX_STANDARD 17)\n"
@@ -802,14 +346,25 @@ jobs:
                   "project(bedrock-viz"
               )
 
-          path.write_text(text)
+              path.write_text(text)
 
-          print("Top-level CMakeLists.txt updated.")
+              print(
+                  "Top-level CMakeLists.txt updated."
+              )
+
+          else:
+              print(
+                  "C++17 configuration already exists."
+              )
           PY
 
           echo
           echo "=== C++ standard settings ==="
-          grep -n -E "CXX_STANDARD|CXX_EXTENSIONS" CMakeLists.txt || true
+
+          grep -n \
+            -E "CXX_STANDARD|CXX_EXTENSIONS" \
+            CMakeLists.txt \
+            || true
 
       - name: Create build directory
         run: |
@@ -818,6 +373,7 @@ jobs:
           cd bedrock-viz
 
           rm -rf build
+
           mkdir build
 
       - name: Run CMake
@@ -848,14 +404,20 @@ jobs:
           echo " CMake compiler"
           echo "=========================================="
 
-          grep -E "CMAKE_CXX_COMPILER:|CMAKE_C_COMPILER:" CMakeCache.txt || true
+          grep \
+            -E "CMAKE_CXX_COMPILER:|CMAKE_C_COMPILER:" \
+            CMakeCache.txt \
+            || true
 
           echo
           echo "=========================================="
           echo " CMake C++ standard"
           echo "=========================================="
 
-          grep -E "CMAKE_CXX_STANDARD|CMAKE_CXX_FLAGS" CMakeCache.txt || true
+          grep \
+            -E "CMAKE_CXX_STANDARD|CMAKE_CXX_FLAGS" \
+            CMakeCache.txt \
+            || true
 
           echo
           echo "=========================================="
@@ -863,7 +425,11 @@ jobs:
           echo "=========================================="
 
           if [ -f "compile_commands.json" ]; then
-            grep -o -- "-std=c++[0-9]*" compile_commands.json \
+
+            grep \
+              -o \
+              -- "-std=c++[0-9]*" \
+              compile_commands.json \
               | sort \
               | uniq -c \
               || true
@@ -871,7 +437,11 @@ jobs:
             echo
             echo "=== C++11 commands ==="
 
-            if grep -n -- "-std=c++11" compile_commands.json; then
+            if grep \
+              -n \
+              -- "-std=c++11" \
+              compile_commands.json
+            then
               echo "WARNING: C++11 command detected."
             else
               echo "No C++11 compile command detected."
@@ -880,9 +450,13 @@ jobs:
             echo
             echo "=== C++17 commands ==="
 
-            grep -n -- "-std=c++17" compile_commands.json \
+            grep \
+              -n \
+              -- "-std=c++17" \
+              compile_commands.json \
               | head -20 \
               || true
+
           else
             echo "compile_commands.json not found."
           fi
@@ -901,6 +475,507 @@ jobs:
             --config Release \
             --parallel 2 \
             --verbose
+
+      # ============================================================
+      # LevelDB inspection starts here.
+      # At this point the LevelDB headers and library have actually
+      # been generated by the bedrock-viz build.
+      # ============================================================
+
+      - name: Locate LevelDB files
+        run: |
+          set -e
+
+          cd bedrock-viz
+
+          echo "=========================================="
+          echo " Locating LevelDB files"
+          echo "=========================================="
+
+          echo
+          echo "=== db.h ==="
+
+          find third_party/leveldb \
+            -name "db.h" \
+            -print
+
+          echo
+          echo "=== libleveldb ==="
+
+          find build third_party/leveldb \
+            \( \
+              -name "libleveldb.a" \
+              -o \
+              -name "libleveldb.so" \
+              -o \
+              -name "libleveldb.so.*" \
+            \) \
+            -print
+
+      - name: Build LevelDB inspection tool
+        run: |
+          set -e
+
+          cd bedrock-viz
+
+          echo "=========================================="
+          echo " Building LevelDB inspection tool"
+          echo "=========================================="
+
+          DB_HEADER="$(
+            find third_party/leveldb \
+              -path "*/leveldb/db.h" \
+              -print \
+              | head -1
+          )"
+
+          if [ -z "$DB_HEADER" ]; then
+            echo "ERROR: leveldb/db.h could not be located."
+            exit 1
+          fi
+
+          LEVELDB_INCLUDE="$(
+            dirname \
+              "$(dirname "$DB_HEADER")"
+          )"
+
+          LEVELDB_LIBRARY="$(
+            find build third_party/leveldb \
+              -name "libleveldb.a" \
+              -print \
+              | head -1
+          )"
+
+          if [ -z "$LEVELDB_LIBRARY" ]; then
+            echo "ERROR: libleveldb.a could not be located."
+            exit 1
+          fi
+
+          echo
+          echo "=== LevelDB header ==="
+          echo "$DB_HEADER"
+
+          echo
+          echo "=== LevelDB include directory ==="
+          echo "$LEVELDB_INCLUDE"
+
+          echo
+          echo "=== LevelDB library ==="
+          echo "$LEVELDB_LIBRARY"
+
+          cat > /tmp/inspect_leveldb.cpp <<'CPP'
+          #include <iostream>
+          #include <string>
+          #include <vector>
+          #include <iomanip>
+          #include <cstdint>
+          #include <cstring>
+          #include <memory>
+
+          #include "leveldb/db.h"
+          #include "leveldb/iterator.h"
+          #include "leveldb/options.h"
+
+          static void printHex(
+              const std::string& data,
+              size_t maxBytes = 96
+          ) {
+              size_t count = data.size();
+
+              if (count > maxBytes) {
+                  count = maxBytes;
+              }
+
+              for (size_t i = 0; i < count; ++i) {
+
+                  unsigned int value =
+                      static_cast<unsigned char>(
+                          data[i]
+                      );
+
+                  std::cout
+                      << std::hex
+                      << std::setw(2)
+                      << std::setfill('0')
+                      << value
+                      << " ";
+              }
+
+              std::cout << std::dec;
+
+              if (data.size() > maxBytes) {
+                  std::cout << "...";
+              }
+          }
+
+          static bool isSubChunkKey(
+              const std::string& key
+          ) {
+              if (key.size() < 10) {
+                  return false;
+              }
+
+              return
+                  static_cast<unsigned char>(
+                      key[8]
+                  ) == 0x2f;
+          }
+
+          int main(
+              int argc,
+              char** argv
+          ) {
+              if (argc < 2) {
+
+                  std::cerr
+                      << "Usage: inspect_leveldb <db_path>"
+                      << std::endl;
+
+                  return 1;
+              }
+
+              const std::string path = argv[1];
+
+              leveldb::Options options;
+
+              options.create_if_missing = false;
+
+              leveldb::DB* db = nullptr;
+
+              leveldb::Status status =
+                  leveldb::DB::Open(
+                      options,
+                      path,
+                      &db
+                  );
+
+              if (!status.ok()) {
+
+                  std::cerr
+                      << "Failed to open LevelDB: "
+                      << status.ToString()
+                      << std::endl;
+
+                  return 2;
+              }
+
+              std::cout
+                  << "=========================================="
+                  << std::endl;
+
+              std::cout
+                  << " LevelDB SubChunk inspection"
+                  << std::endl;
+
+              std::cout
+                  << "=========================================="
+                  << std::endl;
+
+              std::cout
+                  << "DB: "
+                  << path
+                  << std::endl;
+
+              std::unique_ptr<leveldb::Iterator> it(
+                  db->NewIterator(
+                      leveldb::ReadOptions()
+                  )
+              );
+
+              size_t total = 0;
+              size_t subchunks = 0;
+
+              size_t value0 = 0;
+              size_t value1 = 0;
+              size_t value2 = 0;
+              size_t value3 = 0;
+              size_t value4 = 0;
+              size_t value5 = 0;
+              size_t value6 = 0;
+              size_t value7 = 0;
+              size_t value8 = 0;
+              size_t value9 = 0;
+
+              for (
+                  it->SeekToFirst();
+                  it->Valid();
+                  it->Next()
+              ) {
+
+                  ++total;
+
+                  const std::string key =
+                      it->key().ToString();
+
+                  const std::string value =
+                      it->value().ToString();
+
+                  if (!isSubChunkKey(key)) {
+                      continue;
+                  }
+
+                  ++subchunks;
+
+                  if (value.size() < 2) {
+                      continue;
+                  }
+
+                  unsigned int version =
+                      static_cast<unsigned char>(
+                          value[0]
+                      );
+
+                  unsigned int second =
+                      static_cast<unsigned char>(
+                          value[1]
+                      );
+
+                  switch (second) {
+
+                      case 0:
+                          ++value0;
+                          break;
+
+                      case 1:
+                          ++value1;
+                          break;
+
+                      case 2:
+                          ++value2;
+                          break;
+
+                      case 3:
+                          ++value3;
+                          break;
+
+                      case 4:
+                          ++value4;
+                          break;
+
+                      case 5:
+                          ++value5;
+                          break;
+
+                      case 6:
+                          ++value6;
+                          break;
+
+                      case 7:
+                          ++value7;
+                          break;
+
+                      case 8:
+                          ++value8;
+                          break;
+
+                      case 9:
+                          ++value9;
+                          break;
+
+                      default:
+                          break;
+                  }
+
+                  if (
+                      second == 5 ||
+                      second == 0 ||
+                      second == 1 ||
+                      second == 2 ||
+                      second == 3 ||
+                      second == 4 ||
+                      second == 6 ||
+                      second == 7 ||
+                      second == 8 ||
+                      second == 9
+                  ) {
+
+                      int32_t chunkX = 0;
+                      int32_t chunkZ = 0;
+
+                      std::memcpy(
+                          &chunkX,
+                          key.data(),
+                          sizeof(int32_t)
+                      );
+
+                      std::memcpy(
+                          &chunkZ,
+                          key.data() + 4,
+                          sizeof(int32_t)
+                      );
+
+                      unsigned int subChunkY =
+                          static_cast<unsigned char>(
+                              key[9]
+                          );
+
+                      std::cout
+                          << std::endl;
+
+                      std::cout
+                          << "SubChunk candidate"
+                          << std::endl;
+
+                      std::cout
+                          << "  chunk X: "
+                          << chunkX
+                          << std::endl;
+
+                      std::cout
+                          << "  chunk Z: "
+                          << chunkZ
+                          << std::endl;
+
+                      std::cout
+                          << "  subchunk Y byte: "
+                          << subChunkY
+                          << std::endl;
+
+                      std::cout
+                          << "  value size: "
+                          << value.size()
+                          << std::endl;
+
+                      std::cout
+                          << "  version: "
+                          << version
+                          << std::endl;
+
+                      std::cout
+                          << "  value[1]: "
+                          << second
+                          << std::endl;
+
+                      std::cout
+                          << "  value hex: ";
+
+                      printHex(value);
+
+                      std::cout
+                          << std::endl;
+                  }
+              }
+
+              if (!it->status().ok()) {
+
+                  std::cerr
+                      << "Iterator error: "
+                      << it->status().ToString()
+                      << std::endl;
+              }
+
+              std::cout
+                  << std::endl;
+
+              std::cout
+                  << "=========================================="
+                  << std::endl;
+
+              std::cout
+                  << " Summary"
+                  << std::endl;
+
+              std::cout
+                  << "=========================================="
+                  << std::endl;
+
+              std::cout
+                  << "Total LevelDB records: "
+                  << total
+                  << std::endl;
+
+              std::cout
+                  << "SubChunk candidates: "
+                  << subchunks
+                  << std::endl;
+
+              std::cout
+                  << std::endl
+                  << "value[1] distribution:"
+                  << std::endl;
+
+              std::cout
+                  << "  0 : "
+                  << value0
+                  << std::endl;
+
+              std::cout
+                  << "  1 : "
+                  << value1
+                  << std::endl;
+
+              std::cout
+                  << "  2 : "
+                  << value2
+                  << std::endl;
+
+              std::cout
+                  << "  3 : "
+                  << value3
+                  << std::endl;
+
+              std::cout
+                  << "  4 : "
+                  << value4
+                  << std::endl;
+
+              std::cout
+                  << "  5 : "
+                  << value5
+                  << std::endl;
+
+              std::cout
+                  << "  6 : "
+                  << value6
+                  << std::endl;
+
+              std::cout
+                  << "  7 : "
+                  << value7
+                  << std::endl;
+
+              std::cout
+                  << "  8 : "
+                  << value8
+                  << std::endl;
+
+              std::cout
+                  << "  9 : "
+                  << value9
+                  << std::endl;
+
+              delete db;
+
+              return 0;
+          }
+          CPP
+
+          echo
+          echo "=== Compiling inspection tool ==="
+
+          g++ \
+            -std=c++17 \
+            -O2 \
+            -I"$LEVELDB_INCLUDE" \
+            /tmp/inspect_leveldb.cpp \
+            "$LEVELDB_LIBRARY" \
+            -pthread \
+            -o /tmp/inspect_leveldb
+
+          echo
+          echo "Inspection tool built successfully."
+
+      - name: Inspect actual LevelDB records
+        run: |
+          set -e
+
+          DB_DIR="$GITHUB_WORKSPACE/world/extracted/db"
+
+          echo "=========================================="
+          echo " Inspecting actual LevelDB records"
+          echo "=========================================="
+
+          /tmp/inspect_leveldb "$DB_DIR"
 
       - name: Install bedrock-viz
         run: |
@@ -965,10 +1040,12 @@ jobs:
 
           echo
           echo "=== level.dat ==="
+
           ls -lh "$WORLD_DIR/level.dat"
 
           echo
           echo "=== db ==="
+
           ls -ld "$WORLD_DIR/db"
 
           echo
@@ -1000,6 +1077,7 @@ jobs:
           echo "=========================================="
 
           if [ -d "map" ]; then
+
             find map \
               -maxdepth 4 \
               -type f \
@@ -1011,6 +1089,7 @@ jobs:
             find map \
               -type f \
               | wc -l
+
           else
             echo "ERROR: map directory was not created."
             exit 1
