@@ -1,13 +1,17 @@
-name: Generate Minecraft Map
+name: Generate Bedrock Map
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-map:
+  generate-map:
     runs-on: ubuntu-latest
 
     steps:
+
+      # ==========================================
+      # 1. Install dependencies
+      # ==========================================
       - name: Install dependencies
         run: |
           set -e
@@ -15,98 +19,106 @@ jobs:
           sudo apt-get update
 
           sudo apt-get install -y \
-            build-essential \
-            cmake \
             git \
-            python3 \
-            python3-pip \
-            openssh-client \
-            sshpass \
-            libboost-all-dev \
+            cmake \
+            g++ \
+            make \
             zlib1g-dev \
-            libpng-dev \
-            libpng++-dev
+            libboost-all-dev \
+            libpugixml-dev \
+            openssh-client \
+            lftp
 
-      - name: Download Minecraft world
+      # ==========================================
+      # 2. Download world archive from RingoNetworks
+      # ==========================================
+      - name: Download world archive
         env:
-          SSHPASS: ${{ secrets.RINGO_SFTP_PASSWORD }}
+          RINGO_SFTP_HOST: ${{ secrets.RINGO_SFTP_HOST }}
+          RINGO_SFTP_PORT: ${{ secrets.RINGO_SFTP_PORT }}
+          RINGO_SFTP_USER: ${{ secrets.RINGO_SFTP_USER }}
+          RINGO_SFTP_PASSWORD: ${{ secrets.RINGO_SFTP_PASSWORD }}
         run: |
           set -e
 
-          mkdir -p world
-
           echo "=========================================="
-          echo " Downloading Minecraft world"
+          echo " Downloading world archive"
           echo "=========================================="
 
-          sshpass -e sftp \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -P "${{ secrets.RINGO_SFTP_PORT }}" \
-            "${{ secrets.RINGO_SFTP_USER }}@${{ secrets.RINGO_SFTP_HOST }}" <<'EOF'
-          get /worlds/level/archive-2026-09-10T185240+0900.tar.gz world/world.tar.gz
-          bye
-          EOF
+          mkdir -p "$GITHUB_WORKSPACE/world_archive"
 
-          echo
-          echo "=== Downloaded archive ==="
-          ls -lh world/world.tar.gz
+          lftp -u "$RINGO_SFTP_USER","$RINGO_SFTP_PASSWORD" \
+            -p "$RINGO_SFTP_PORT" \
+            "sftp://$RINGO_SFTP_HOST" \
+            -e "
+              set sftp:auto-confirm yes;
+              get /worlds/level/archive-2026-09-10T185240+0900.tar.gz \
+                -o $GITHUB_WORKSPACE/world_archive/world.tar.gz;
+              bye
+            "
 
-      - name: Extract Minecraft world
+          ls -lh "$GITHUB_WORKSPACE/world_archive/world.tar.gz"
+
+      # ==========================================
+      # 3. Extract world
+      # ==========================================
+      - name: Extract world
         run: |
           set -e
 
-          mkdir -p world/extracted
-
           echo "=========================================="
-          echo " Extracting Minecraft world"
+          echo " Extracting world"
           echo "=========================================="
 
-          tar -xzf world/world.tar.gz -C world/extracted
+          mkdir -p "$GITHUB_WORKSPACE/world"
 
-          echo
+          tar \
+            -xzf "$GITHUB_WORKSPACE/world_archive/world.tar.gz" \
+            -C "$GITHUB_WORKSPACE/world"
+
           echo "=== Extracted files ==="
-          find world/extracted -maxdepth 3 -type f | head -100
+          find "$GITHUB_WORKSPACE/world" -maxdepth 2 -type f | head -50
 
-      - name: Validate Minecraft world
+      # ==========================================
+      # 4. Locate level.dat
+      # ==========================================
+      - name: Locate world
         run: |
           set -e
 
-          WORLD_DIR="$GITHUB_WORKSPACE/world/extracted"
-
           echo "=========================================="
-          echo " Checking Minecraft world"
+          echo " Locating level.dat"
           echo "=========================================="
 
-          echo
-          echo "=== level.dat ==="
+          LEVEL_DAT=$(find "$GITHUB_WORKSPACE/world" \
+            -name level.dat \
+            -type f \
+            | head -1)
 
-          if [ -f "$WORLD_DIR/level.dat" ]; then
-            echo "Found:"
-            echo "$WORLD_DIR/level.dat"
-          else
+          if [ -z "$LEVEL_DAT" ]; then
             echo "ERROR: level.dat was not found."
             exit 1
           fi
 
-          echo
-          echo "=== db directory ==="
+          WORLD_DIR=$(dirname "$LEVEL_DAT")
 
-          if [ -d "$WORLD_DIR/db" ]; then
-            echo "Found:"
-            echo "$WORLD_DIR/db"
-          else
+          echo "LEVEL_DAT=$LEVEL_DAT" >> "$GITHUB_ENV"
+          echo "WORLD_DIR=$WORLD_DIR" >> "$GITHUB_ENV"
+
+          echo "World directory:"
+          echo "$WORLD_DIR"
+
+          echo "=== World contents ==="
+          ls -lah "$WORLD_DIR"
+
+          if [ ! -d "$WORLD_DIR/db" ]; then
             echo "ERROR: db directory was not found."
             exit 1
           fi
 
-          echo
-          echo "=== LevelDB file count ==="
-
-          find "$WORLD_DIR/db" \
-            -type f \
-            | wc -l
-
+      # ==========================================
+      # 5. Clone bedrock-viz
+      # ==========================================
       - name: Clone bedrock-viz
         run: |
           set -e
@@ -117,453 +129,240 @@ jobs:
 
           git clone --recursive \
             https://github.com/paulgrahek/bedrock-viz.git \
-            bedrock-viz
+            "$GITHUB_WORKSPACE/bedrock-viz"
 
-          cd bedrock-viz
+          cd "$GITHUB_WORKSPACE/bedrock-viz"
 
-          echo
+          git submodule update --init --recursive
+
           echo "=== bedrock-viz commit ==="
-
           git rev-parse HEAD
 
-          echo
-          echo "=== Submodule status ==="
-
-          git submodule status
-
-      - name: Apply bedrock-viz patches
+      # ==========================================
+      # 6. Apply LevelDB patches
+      # ==========================================
+      - name: Apply LevelDB patches
+        working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
 
-          cd bedrock-viz
-
           echo "=========================================="
-          echo " Available patches"
-          echo "=========================================="
-
-          ls -lh patches/
-
-          echo
-          echo "=========================================="
-          echo " Applying LevelDB patch"
+          echo " Applying LevelDB patches"
           echo "=========================================="
 
           git apply -p0 patches/leveldb-1.22.patch
+          git apply -p0 patches/pugixml-disable-install.patch
 
-          echo
-          echo "LevelDB patch applied successfully."
+          echo "=== Verify LevelDB patch ==="
 
-          echo
-          echo "=========================================="
-          echo " Applying pugixml patch"
-          echo "=========================================="
-
-          if [ -f "patches/pugixml-disable-install.patch" ]; then
-            git apply -p0 patches/pugixml-disable-install.patch
-            echo
-            echo "pugixml patch applied successfully."
-          else
-            echo "pugixml patch not found. Skipping."
-          fi
-
-      - name: Verify LevelDB patch
-        run: |
-          set -e
-
-          cd bedrock-viz
-
-          echo "=========================================="
-          echo " LevelDB after patch"
-          echo "=========================================="
-
-          echo
-          echo "=== DecompressAllocator ==="
-
-          grep -RIn \
+          grep -R \
             "DecompressAllocator" \
             third_party/leveldb \
             || true
 
-          echo
-          echo "=== decompress_allocator ==="
-
-          grep -RIn \
-            "decompress_allocator" \
-            third_party/leveldb \
-            || true
-
-          echo
-          echo "=== kZlibRawCompression ==="
-
-          grep -RIn \
+          grep -R \
             "kZlibRawCompression" \
             third_party/leveldb \
             || true
 
-          echo
-          echo "=== decompress_allocator.h ==="
-
-          find third_party/leveldb \
-            -name "decompress_allocator.h" \
-            -print
-
-          echo
-          echo "=========================================="
-          echo " Git status after patch"
-          echo "=========================================="
-
-          git status --short
-
+      # ==========================================
+      # 7. Fix zlib_compressor.cc
+      # ==========================================
       - name: Fix zlib compressor include
+        working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
 
-          cd bedrock-viz
+          echo "=========================================="
+          echo " Fixing zlib_compressor.cc"
+          echo "=========================================="
 
           FILE="third_party/leveldb/table/compressor/zlib_compressor.cc"
 
-          echo "=========================================="
-          echo " Checking zlib compressor"
-          echo "=========================================="
-
-          if [ -f "$FILE" ]; then
-
-            echo
-            echo "=== Before ==="
-
-            sed -n '1,50p' "$FILE"
-
-            python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path(
-              "third_party/leveldb/table/compressor/zlib_compressor.cc"
-          )
-
-          text = path.read_text()
-
-          if "#include <cstdint>" not in text:
-              text = text.replace(
-                  "#include <zlib.h>",
-                  "#include <zlib.h>\n#include <cstdint>"
-              )
-
-              path.write_text(text)
-
-              print("Added <cstdint>.")
-          else:
-              print("<cstdint> already exists.")
-          PY
-
-            echo
-            echo "=== After ==="
-
-            sed -n '1,50p' "$FILE"
-
-          else
-            echo "zlib_compressor.cc not found."
+          if ! grep -q "#include <cstdint>" "$FILE"; then
+            sed -i '1i#include <cstdint>' "$FILE"
           fi
 
-      - name: Fix libnbtplusplus C++ standard
+          echo "=== Header check ==="
+          head -20 "$FILE"
+
+      # ==========================================
+      # 8. Fix libnbtplusplus C++17
+      # ==========================================
+      - name: Fix libnbtplusplus C++17
+        working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
 
-          cd bedrock-viz
-
-          FILE="third_party/libnbtplusplus/CMakeLists.txt"
-
           echo "=========================================="
-          echo " Checking libnbtplusplus CMake"
+          echo " Fixing libnbtplusplus C++17"
           echo "=========================================="
 
-          if [ -f "$FILE" ]; then
+          find . \
+            -path '*libnbtplusplus*' \
+            -type f \
+            \( -name '*.h' -o -name '*.hpp' -o -name '*.cc' -o -name '*.cpp' \) \
+            -print0 \
+            | xargs -0 grep -l \
+              'std::filesystem\|std::make_unique' \
+            2>/dev/null \
+            | while read -r FILE; do
 
-            echo
-            echo "=== Before ==="
+                echo "C++17 file: $FILE"
 
-            grep -n \
-              -E "std=c\+\+|CXX_STANDARD" \
-              "$FILE" \
-              || true
+              done
 
-            python3 - <<'PY'
-          from pathlib import Path
+      # ==========================================
+      # 9. Force top-level C++17
+      # ==========================================
+      - name: Configure C++17
+        working-directory: ${{ github.workspace }}/bedrock-viz
+        run: |
+          set -e
 
-          path = Path(
-              "third_party/libnbtplusplus/CMakeLists.txt"
-          )
+          echo "=========================================="
+          echo " Configuring C++17"
+          echo "=========================================="
 
-          text = path.read_text()
-
-          text = text.replace(
-              "-std=c++11",
-              "-std=c++17"
-          )
-
-          path.write_text(text)
-
-          print(
-              "libnbtplusplus C++ standard updated."
-          )
-          PY
-
-            echo
-            echo "=== After ==="
-
-            grep -n \
-              -E "std=c\+\+|CXX_STANDARD" \
-              "$FILE" \
-              || true
-
+          if grep -q "CMAKE_CXX_STANDARD" CMakeLists.txt; then
+            sed -i \
+              's/set(CMAKE_CXX_STANDARD [0-9][0-9]*)/set(CMAKE_CXX_STANDARD 17)/' \
+              CMakeLists.txt
           else
-            echo "libnbtplusplus CMakeLists.txt not found."
+            sed -i '1i set(CMAKE_CXX_STANDARD 17)' CMakeLists.txt
           fi
 
-      - name: Configure CMake settings
+          echo "=== CMake C++ standard ==="
+          grep -n "CMAKE_CXX_STANDARD" CMakeLists.txt || true
+
+      # ==========================================
+      # 10. Configure build
+      # ==========================================
+      - name: Configure build
+        working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
 
-          cd bedrock-viz
-
           echo "=========================================="
-          echo " Configuring CMake C++ standard"
+          echo " Configuring build"
           echo "=========================================="
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("CMakeLists.txt")
-
-          text = path.read_text()
-
-          if "set(CMAKE_CXX_STANDARD 17)" not in text:
-
-              text = text.replace(
-                  "project(bedrock-viz",
-                  "set(CMAKE_CXX_STANDARD 17)\n"
-                  "set(CMAKE_CXX_STANDARD_REQUIRED ON)\n"
-                  "set(CMAKE_CXX_EXTENSIONS OFF)\n\n"
-                  "project(bedrock-viz"
-              )
-
-              path.write_text(text)
-
-              print(
-                  "Top-level CMakeLists.txt updated."
-              )
-
-          else:
-              print(
-                  "C++17 configuration already exists."
-              )
-          PY
-
-          echo
-          echo "=== C++ standard settings ==="
-
-          grep -n \
-            -E "CXX_STANDARD|CXX_EXTENSIONS" \
-            CMakeLists.txt \
-            || true
-
-      - name: Create build directory
-        run: |
-          set -e
-
-          cd bedrock-viz
 
           rm -rf build
 
-          mkdir build
-
-      - name: Run CMake
-        run: |
-          set -e
-
-          cd bedrock-viz/build
-
-          echo "=========================================="
-          echo " Running CMake"
-          echo "=========================================="
-
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
+          cmake \
+            -S . \
+            -B build \
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
-            -DCMAKE_CXX_EXTENSIONS=OFF \
-            -DCMAKE_CXX_FLAGS="-std=c++17" \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            -DCMAKE_BUILD_TYPE=Release
 
+      # ==========================================
+      # 11. Verify compiler settings
+      # ==========================================
       - name: Verify compiler settings
+        working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
 
-          cd bedrock-viz/build
-
           echo "=========================================="
-          echo " CMake compiler"
+          echo " Compiler settings"
           echo "=========================================="
 
-          grep \
-            -E "CMAKE_CXX_COMPILER:|CMAKE_C_COMPILER:" \
-            CMakeCache.txt \
-            || true
-
-          echo
-          echo "=========================================="
-          echo " CMake C++ standard"
-          echo "=========================================="
+          echo "=== CMake cache ==="
 
           grep \
             -E "CMAKE_CXX_STANDARD|CMAKE_CXX_FLAGS" \
-            CMakeCache.txt \
+            build/CMakeCache.txt \
             || true
 
-          echo
-          echo "=========================================="
-          echo " compile_commands.json"
-          echo "=========================================="
-
-          if [ -f "compile_commands.json" ]; then
-
-            grep \
-              -o \
-              -- "-std=c++[0-9]*" \
-              compile_commands.json \
-              | sort \
-              | uniq -c \
-              || true
-
-            echo
-            echo "=== C++11 commands ==="
-
-            if grep \
-              -n \
-              -- "-std=c++11" \
-              compile_commands.json
-            then
-              echo "WARNING: C++11 command detected."
-            else
-              echo "No C++11 compile command detected."
-            fi
-
-            echo
-            echo "=== C++17 commands ==="
-
-            grep \
-              -n \
-              -- "-std=c++17" \
-              compile_commands.json \
-              | head -20 \
-              || true
-
-          else
-            echo "compile_commands.json not found."
-          fi
-
+      # ==========================================
+      # 12. Build bedrock-viz
+      # ==========================================
       - name: Build bedrock-viz
+        working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
-
-          cd bedrock-viz/build
 
           echo "=========================================="
           echo " Building bedrock-viz"
           echo "=========================================="
 
-          cmake --build . \
+          cmake \
+            --build build \
             --config Release \
-            --parallel 2 \
-            --verbose
+            --parallel "$(nproc)"
 
-      # ============================================================
-      # LevelDB inspection starts here.
-      # At this point the LevelDB headers and library have actually
-      # been generated by the bedrock-viz build.
-      # ============================================================
+          echo "=== Built files ==="
 
+          find build \
+            -maxdepth 3 \
+            -type f \
+            -executable \
+            -print
+
+      # ==========================================
+      # 13. Locate LevelDB files
+      # ==========================================
       - name: Locate LevelDB files
+        working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
-
-          cd bedrock-viz
 
           echo "=========================================="
           echo " Locating LevelDB files"
           echo "=========================================="
 
-          echo
-          echo "=== db.h ==="
+          LEVELDB_HEADER=$(find . \
+            -path '*/leveldb/db.h' \
+            -type f \
+            | head -1)
 
-          find third_party/leveldb \
-            -name "db.h" \
-            -print
+          LEVELDB_INCLUDE=$(dirname "$(dirname "$LEVELDB_HEADER")")
 
-          echo
-          echo "=== libleveldb ==="
+          LEVELDB_LIBRARY=$(find build \
+            -name libleveldb.a \
+            -type f \
+            | head -1)
 
-          find build third_party/leveldb \
-            \( \
-              -name "libleveldb.a" \
-              -o \
-              -name "libleveldb.so" \
-              -o \
-              -name "libleveldb.so.*" \
-            \) \
-            -print
+          if [ -z "$LEVELDB_HEADER" ]; then
+            echo "ERROR: LevelDB header was not found."
+            exit 1
+          fi
 
+          if [ -z "$LEVELDB_LIBRARY" ]; then
+            echo "ERROR: libleveldb.a was not found."
+            exit 1
+          fi
+
+          echo "LEVELDB_HEADER=$LEVELDB_HEADER"
+          echo "LEVELDB_INCLUDE=$LEVELDB_INCLUDE"
+          echo "LEVELDB_LIBRARY=$LEVELDB_LIBRARY"
+
+          echo "LEVELDB_INCLUDE=$GITHUB_WORKSPACE/bedrock-viz/$LEVELDB_INCLUDE" >> "$GITHUB_ENV"
+          echo "LEVELDB_LIBRARY=$GITHUB_WORKSPACE/bedrock-viz/$LEVELDB_LIBRARY" >> "$GITHUB_ENV"
+
+      # ==========================================
+      # 14. Build LevelDB inspection tool
+      # ==========================================
       - name: Build LevelDB inspection tool
+        working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
-
-          cd bedrock-viz
 
           echo "=========================================="
           echo " Building LevelDB inspection tool"
           echo "=========================================="
 
-          DB_HEADER="$(
-            find third_party/leveldb \
-              -path "*/leveldb/db.h" \
-              -print \
-              | head -1
-          )"
-
-          if [ -z "$DB_HEADER" ]; then
-            echo "ERROR: leveldb/db.h could not be located."
-            exit 1
-          fi
-
-          LEVELDB_INCLUDE="$(
-            dirname \
-              "$(dirname "$DB_HEADER")"
-          )"
-
-          LEVELDB_LIBRARY="$(
-            find build third_party/leveldb \
-              -name "libleveldb.a" \
-              -print \
-              | head -1
-          )"
-
-          if [ -z "$LEVELDB_LIBRARY" ]; then
-            echo "ERROR: libleveldb.a could not be located."
-            exit 1
-          fi
-
-          echo
           echo "=== LevelDB header ==="
-          echo "$DB_HEADER"
+          echo "${LEVELDB_INCLUDE}/leveldb/db.h"
 
-          echo
           echo "=== LevelDB include directory ==="
           echo "$LEVELDB_INCLUDE"
 
-          echo
           echo "=== LevelDB library ==="
           echo "$LEVELDB_LIBRARY"
 
-          cat > /tmp/inspect_leveldb.cpp <<'CPP'
+          cat > /tmp/inspect_leveldb.cpp <<'EOF'
           #include <iostream>
           #include <string>
           #include <vector>
@@ -576,57 +375,37 @@ jobs:
           #include "leveldb/iterator.h"
           #include "leveldb/options.h"
 
-          static void printHex(
-              const std::string& data,
-              size_t maxBytes = 96
+          static void print_hex(
+              const char* data,
+              size_t size,
+              size_t max_size
           ) {
-              size_t count = data.size();
+              size_t n = std::min(size, max_size);
 
-              if (count > maxBytes) {
-                  count = maxBytes;
-              }
-
-              for (size_t i = 0; i < count; ++i) {
-
-                  unsigned int value =
-                      static_cast<unsigned char>(
-                          data[i]
+              for (size_t i = 0; i < n; ++i) {
+                  unsigned int v =
+                      static_cast<unsigned int>(
+                          static_cast<unsigned char>(data[i])
                       );
 
                   std::cout
                       << std::hex
                       << std::setw(2)
                       << std::setfill('0')
-                      << value
+                      << v
                       << " ";
               }
 
               std::cout << std::dec;
 
-              if (data.size() > maxBytes) {
+              if (size > max_size) {
                   std::cout << "...";
               }
           }
 
-          static bool isSubChunkKey(
-              const std::string& key
-          ) {
-              if (key.size() < 10) {
-                  return false;
-              }
+          int main(int argc, char** argv) {
 
-              return
-                  static_cast<unsigned char>(
-                      key[8]
-                  ) == 0x2f;
-          }
-
-          int main(
-              int argc,
-              char** argv
-          ) {
-              if (argc < 2) {
-
+              if (argc != 2) {
                   std::cerr
                       << "Usage: inspect_leveldb <db_path>"
                       << std::endl;
@@ -634,29 +413,27 @@ jobs:
                   return 1;
               }
 
-              const std::string path = argv[1];
-
-              leveldb::Options options;
-
-              options.create_if_missing = false;
+              const std::string db_path = argv[1];
 
               leveldb::DB* db = nullptr;
+
+              leveldb::Options options;
+              options.create_if_missing = false;
 
               leveldb::Status status =
                   leveldb::DB::Open(
                       options,
-                      path,
+                      db_path,
                       &db
                   );
 
               if (!status.ok()) {
-
                   std::cerr
                       << "Failed to open LevelDB: "
                       << status.ToString()
                       << std::endl;
 
-                  return 2;
+                  return 1;
               }
 
               std::cout
@@ -664,7 +441,7 @@ jobs:
                   << std::endl;
 
               std::cout
-                  << " LevelDB SubChunk inspection"
+                  << " LevelDB inspection"
                   << std::endl;
 
               std::cout
@@ -673,8 +450,16 @@ jobs:
 
               std::cout
                   << "DB: "
-                  << path
+                  << db_path
                   << std::endl;
+
+              std::cout << std::endl;
+
+              std::vector<uint64_t> value1_counts(256, 0);
+              std::vector<uint64_t> version_counts(256, 0);
+
+              uint64_t total_records = 0;
+              uint64_t subchunk_records = 0;
 
               std::unique_ptr<leveldb::Iterator> it(
                   db->NewIterator(
@@ -682,190 +467,161 @@ jobs:
                   )
               );
 
-              size_t total = 0;
-              size_t subchunks = 0;
+              for (it->SeekToFirst();
+                   it->Valid();
+                   it->Next()) {
 
-              size_t value0 = 0;
-              size_t value1 = 0;
-              size_t value2 = 0;
-              size_t value3 = 0;
-              size_t value4 = 0;
-              size_t value5 = 0;
-              size_t value6 = 0;
-              size_t value7 = 0;
-              size_t value8 = 0;
-              size_t value9 = 0;
+                  const leveldb::Slice key =
+                      it->key();
 
-              for (
-                  it->SeekToFirst();
-                  it->Valid();
-                  it->Next()
-              ) {
+                  const leveldb::Slice value =
+                      it->value();
 
-                  ++total;
+                  ++total_records;
 
-                  const std::string key =
-                      it->key().ToString();
-
-                  const std::string value =
-                      it->value().ToString();
-
-                  if (!isSubChunkKey(key)) {
-                      continue;
-                  }
-
-                  ++subchunks;
-
-                  if (value.size() < 2) {
-                      continue;
-                  }
-
-                  unsigned int version =
-                      static_cast<unsigned char>(
-                          value[0]
-                      );
-
-                  unsigned int second =
-                      static_cast<unsigned char>(
-                          value[1]
-                      );
-
-                  switch (second) {
-
-                      case 0:
-                          ++value0;
-                          break;
-
-                      case 1:
-                          ++value1;
-                          break;
-
-                      case 2:
-                          ++value2;
-                          break;
-
-                      case 3:
-                          ++value3;
-                          break;
-
-                      case 4:
-                          ++value4;
-                          break;
-
-                      case 5:
-                          ++value5;
-                          break;
-
-                      case 6:
-                          ++value6;
-                          break;
-
-                      case 7:
-                          ++value7;
-                          break;
-
-                      case 8:
-                          ++value8;
-                          break;
-
-                      case 9:
-                          ++value9;
-                          break;
-
-                      default:
-                          break;
-                  }
-
-                  if (
-                      second == 5 ||
-                      second == 0 ||
-                      second == 1 ||
-                      second == 2 ||
-                      second == 3 ||
-                      second == 4 ||
-                      second == 6 ||
-                      second == 7 ||
-                      second == 8 ||
-                      second == 9
-                  ) {
-
-                      int32_t chunkX = 0;
-                      int32_t chunkZ = 0;
-
-                      std::memcpy(
-                          &chunkX,
-                          key.data(),
-                          sizeof(int32_t)
-                      );
-
-                      std::memcpy(
-                          &chunkZ,
-                          key.data() + 4,
-                          sizeof(int32_t)
-                      );
-
-                      unsigned int subChunkY =
-                          static_cast<unsigned char>(
-                              key[9]
+                  if (value.size() >= 1) {
+                      uint8_t version =
+                          static_cast<uint8_t>(
+                              value.data()[0]
                           );
 
-                      std::cout
-                          << std::endl;
+                      ++version_counts[version];
+                  }
 
-                      std::cout
-                          << "SubChunk candidate"
-                          << std::endl;
+                  /*
+                   * Bedrock overworld subchunk keys:
+                   *
+                   * 8 bytes  : chunk X
+                   * 4 bytes  : chunk Z
+                   * 1 byte   : dimension / subchunk tag
+                   * 1 byte   : subchunk Y
+                   *
+                   * The exact key layout is intentionally
+                   * checked conservatively here.
+                   */
 
-                      std::cout
-                          << "  chunk X: "
-                          << chunkX
-                          << std::endl;
+                  if (key.size() >= 10) {
 
-                      std::cout
-                          << "  chunk Z: "
-                          << chunkZ
-                          << std::endl;
+                      const unsigned char* k =
+                          reinterpret_cast<
+                              const unsigned char*
+                          >(key.data());
 
-                      std::cout
-                          << "  subchunk Y byte: "
-                          << subChunkY
-                          << std::endl;
+                      /*
+                       * Tag 0x2f ('/') is the subchunk
+                       * record tag used by Bedrock.
+                       */
+                      if (k[8] == 0x2f) {
 
-                      std::cout
-                          << "  value size: "
-                          << value.size()
-                          << std::endl;
+                          ++subchunk_records;
 
-                      std::cout
-                          << "  version: "
-                          << version
-                          << std::endl;
+                          uint8_t subchunk_y =
+                              k[9];
 
-                      std::cout
-                          << "  value[1]: "
-                          << second
-                          << std::endl;
+                          uint8_t version = 0;
 
-                      std::cout
-                          << "  value hex: ";
+                          uint8_t second = 0;
 
-                      printHex(value);
+                          if (value.size() >= 1) {
+                              version =
+                                  static_cast<uint8_t>(
+                                      value.data()[0]
+                                  );
+                          }
 
-                      std::cout
-                          << std::endl;
+                          if (value.size() >= 2) {
+                              second =
+                                  static_cast<uint8_t>(
+                                      value.data()[1]
+                                  );
+
+                              ++value1_counts[second];
+                          }
+
+                          std::cout
+                              << "------------------------------------------"
+                              << std::endl;
+
+                          std::cout
+                              << "SubChunk record"
+                              << std::endl;
+
+                          std::cout
+                              << "key size      = "
+                              << key.size()
+                              << std::endl;
+
+                          std::cout
+                              << "value size    = "
+                              << value.size()
+                              << std::endl;
+
+                          std::cout
+                              << "version       = "
+                              << static_cast<int>(version)
+                              << std::endl;
+
+                          std::cout
+                              << "value[1]      = "
+                              << static_cast<int>(second)
+                              << std::endl;
+
+                          std::cout
+                              << "subchunk Y    = "
+                              << static_cast<int>(subchunk_y)
+                              << std::endl;
+
+                          std::cout
+                              << "first 96 bytes:"
+                              << std::endl;
+
+                          print_hex(
+                              value.data(),
+                              value.size(),
+                              96
+                          );
+
+                          std::cout
+                              << std::endl;
+
+                          /*
+                           * Highlight potentially interesting
+                           * values.
+                           */
+                          if (second == 5) {
+                              std::cout
+                                  << "*** FOUND value[1] = 5 ***"
+                                  << std::endl;
+                          }
+
+                          /*
+                           * Limit detailed output so the GitHub
+                           * Actions log does not become enormous.
+                           */
+                          if (subchunk_records >= 200) {
+                              std::cout
+                                  << std::endl
+                                  << "Reached 200 subchunk records."
+                                  << std::endl;
+
+                              break;
+                          }
+                      }
                   }
               }
 
               if (!it->status().ok()) {
-
                   std::cerr
                       << "Iterator error: "
                       << it->status().ToString()
                       << std::endl;
+
+                  delete db;
+
+                  return 1;
               }
 
-              std::cout
-                  << std::endl;
+              std::cout << std::endl;
 
               std::cout
                   << "=========================================="
@@ -880,77 +636,63 @@ jobs:
                   << std::endl;
 
               std::cout
-                  << "Total LevelDB records: "
-                  << total
+                  << "Total records: "
+                  << total_records
                   << std::endl;
 
               std::cout
-                  << "SubChunk candidates: "
-                  << subchunks
+                  << "SubChunk records inspected: "
+                  << subchunk_records
                   << std::endl;
 
-              std::cout
-                  << std::endl
-                  << "value[1] distribution:"
-                  << std::endl;
+              std::cout << std::endl;
 
               std::cout
-                  << "  0 : "
-                  << value0
+                  << "=== Value[0] version distribution ==="
                   << std::endl;
 
-              std::cout
-                  << "  1 : "
-                  << value1
-                  << std::endl;
+              for (size_t i = 0;
+                   i < version_counts.size();
+                   ++i) {
+
+                  if (version_counts[i] != 0) {
+
+                      std::cout
+                          << "version "
+                          << i
+                          << " = "
+                          << version_counts[i]
+                          << std::endl;
+                  }
+              }
+
+              std::cout << std::endl;
 
               std::cout
-                  << "  2 : "
-                  << value2
+                  << "=== Value[1] distribution ==="
                   << std::endl;
 
-              std::cout
-                  << "  3 : "
-                  << value3
-                  << std::endl;
+              for (size_t i = 0;
+                   i < value1_counts.size();
+                   ++i) {
 
-              std::cout
-                  << "  4 : "
-                  << value4
-                  << std::endl;
+                  if (value1_counts[i] != 0) {
 
-              std::cout
-                  << "  5 : "
-                  << value5
-                  << std::endl;
-
-              std::cout
-                  << "  6 : "
-                  << value6
-                  << std::endl;
-
-              std::cout
-                  << "  7 : "
-                  << value7
-                  << std::endl;
-
-              std::cout
-                  << "  8 : "
-                  << value8
-                  << std::endl;
-
-              std::cout
-                  << "  9 : "
-                  << value9
-                  << std::endl;
+                      std::cout
+                          << "value[1] "
+                          << i
+                          << " = "
+                          << value1_counts[i]
+                          << std::endl;
+                  }
+              }
 
               delete db;
 
               return 0;
           }
-          CPP
+          EOF
 
-          echo
           echo "=== Compiling inspection tool ==="
 
           g++ \
@@ -959,145 +701,171 @@ jobs:
             -I"$LEVELDB_INCLUDE" \
             /tmp/inspect_leveldb.cpp \
             "$LEVELDB_LIBRARY" \
+            -lz \
             -pthread \
             -o /tmp/inspect_leveldb
 
-          echo
           echo "Inspection tool built successfully."
 
+      # ==========================================
+      # 15. Inspect actual LevelDB records
+      # ==========================================
       - name: Inspect actual LevelDB records
         run: |
           set -e
 
-          DB_DIR="$GITHUB_WORKSPACE/world/extracted/db"
-
           echo "=========================================="
-          echo " Inspecting actual LevelDB records"
+          echo " Inspecting actual LevelDB"
           echo "=========================================="
 
-          /tmp/inspect_leveldb "$DB_DIR"
+          echo "World DB:"
+          echo "$WORLD_DIR/db"
 
+          if [ ! -d "$WORLD_DIR/db" ]; then
+            echo "ERROR: World DB directory does not exist."
+            exit 1
+          fi
+
+          /tmp/inspect_leveldb \
+            "$WORLD_DIR/db"
+
+      # ==========================================
+      # 16. Install bedrock-viz
+      # ==========================================
       - name: Install bedrock-viz
+        working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
-
-          cd bedrock-viz/build
 
           echo "=========================================="
           echo " Installing bedrock-viz"
           echo "=========================================="
 
-          sudo cmake --install .
+          sudo cmake \
+            --install build
 
+          echo "=== Installed XML ==="
+
+          ls -lh \
+            /usr/local/share/bedrock-viz/data/bedrock_viz.xml
+
+      # ==========================================
+      # 17. Verify installed files
+      # ==========================================
       - name: Verify bedrock-viz installation
         run: |
           set -e
 
           echo "=========================================="
-          echo " Installed executable"
+          echo " Verifying installation"
           echo "=========================================="
 
-          which bedrock-viz
+          if [ ! -f \
+            "/usr/local/share/bedrock-viz/data/bedrock_viz.xml" \
+          ]; then
 
-          echo
-          echo "=========================================="
-          echo " Installed data files"
-          echo "=========================================="
-
-          find /usr/local/share/bedrock-viz \
-            -maxdepth 3 \
-            -type f \
-            -print
-
-          echo
-          echo "=========================================="
-          echo " Checking bedrock_viz.xml"
-          echo "=========================================="
-
-          XML_FILE="/usr/local/share/bedrock-viz/data/bedrock_viz.xml"
-
-          if [ -f "$XML_FILE" ]; then
-            echo "FOUND:"
-            echo "$XML_FILE"
-          else
             echo "ERROR: bedrock_viz.xml was not installed."
+
             exit 1
           fi
 
+          if [ ! -d \
+            "/usr/local/share/bedrock-viz/static" \
+          ]; then
+
+            echo "ERROR: static directory was not installed."
+
+            exit 1
+          fi
+
+          echo "bedrock-viz installation OK."
+
+      # ==========================================
+      # 18. Run bedrock-viz
+      # ==========================================
       - name: Generate map
+        working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
 
-          WORLD_DIR="$GITHUB_WORKSPACE/world/extracted"
-
-          mkdir -p "$GITHUB_WORKSPACE/map"
-
           echo "=========================================="
-          echo " World"
+          echo " Generating map"
           echo "=========================================="
 
-          echo "$WORLD_DIR"
+          mkdir -p \
+            "$GITHUB_WORKSPACE/map/out1"
 
-          echo
-          echo "=== level.dat ==="
+          BEDROCK_VIZ="$GITHUB_WORKSPACE/bedrock-viz/build/bedrock-viz"
 
-          ls -lh "$WORLD_DIR/level.dat"
+          if [ ! -x "$BEDROCK_VIZ" ]; then
+            echo "ERROR: bedrock-viz executable not found."
 
-          echo
-          echo "=== db ==="
+            find "$GITHUB_WORKSPACE/bedrock-viz/build" \
+              -type f \
+              -executable \
+              -print
 
-          ls -ld "$WORLD_DIR/db"
+            exit 1
+          fi
 
-          echo
-          echo "=========================================="
-          echo " bedrock-viz"
-          echo "=========================================="
-
-          BEDROCK_VIZ="$(which bedrock-viz)"
-
-          echo "Using:"
+          echo "Executable:"
           echo "$BEDROCK_VIZ"
 
-          echo
-          echo "=========================================="
-          echo " Running bedrock-viz"
-          echo "=========================================="
+          echo "World:"
+          echo "$WORLD_DIR"
 
           "$BEDROCK_VIZ" \
             --db "$WORLD_DIR" \
             --out "$GITHUB_WORKSPACE/map/out1" \
             --html-most
 
+      # ==========================================
+      # 19. Check generated map
+      # ==========================================
       - name: Check generated map
         run: |
           set -e
 
           echo "=========================================="
-          echo " Generated map"
+          echo " Checking generated map"
           echo "=========================================="
 
-          if [ -d "map" ]; then
+          if [ ! -d \
+            "$GITHUB_WORKSPACE/map/out1" \
+          ]; then
 
-            find map \
-              -maxdepth 4 \
-              -type f \
-              | head -200
+            echo "ERROR: map output directory does not exist."
 
-            echo
-            echo "=== File count ==="
-
-            find map \
-              -type f \
-              | wc -l
-
-          else
-            echo "ERROR: map directory was not created."
             exit 1
           fi
 
+          echo "=== Map output ==="
+
+          find \
+            "$GITHUB_WORKSPACE/map/out1" \
+            -maxdepth 2 \
+            -type f \
+            | head -100
+
+          FILE_COUNT=$(find \
+            "$GITHUB_WORKSPACE/map/out1" \
+            -type f \
+            | wc -l)
+
+          echo "Generated files: $FILE_COUNT"
+
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "ERROR: No map files were generated."
+            exit 1
+          fi
+
+      # ==========================================
+      # 20. Upload map artifact
+      # ==========================================
       - name: Upload map artifact
         uses: actions/upload-artifact@v4
         with:
           name: bedrock-viz-map
-          path: map/
+          path: map/out1
+          if-no-files-found: error
           retention-days: 7
