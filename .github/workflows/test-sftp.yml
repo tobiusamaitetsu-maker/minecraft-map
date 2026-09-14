@@ -199,7 +199,79 @@ jobs:
           head -20 "$FILE"
 
       # ==========================================
-      # 8. Check libnbtplusplus
+      # 8. Fix filesystem includes
+      # ==========================================
+      - name: Fix filesystem includes
+        working-directory: ${{ github.workspace }}/bedrock-viz
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo " Fixing filesystem includes"
+          echo "=========================================="
+
+          FILES="\
+          include/asset.h
+          include/control.h
+          src/asset.cc
+          src/control.cc
+          src/logger.cc
+          "
+
+          for FILE in $FILES; do
+
+            if [ ! -f "$FILE" ]; then
+              echo "Skipping missing file: $FILE"
+              continue
+            fi
+
+            if grep -q "std::filesystem" "$FILE"; then
+
+              if ! grep -q "#include <filesystem>" "$FILE"; then
+
+                echo "Adding <filesystem> to $FILE"
+
+                sed -i '1i#include <filesystem>' "$FILE"
+
+              else
+
+                echo "<filesystem> already exists in $FILE"
+
+              fi
+
+            else
+
+              echo "No std::filesystem usage in $FILE"
+
+            fi
+
+          done
+
+          echo
+          echo "=== Filesystem include verification ==="
+
+          for FILE in $FILES; do
+
+            if [ -f "$FILE" ]; then
+
+              if grep -q "std::filesystem" "$FILE"; then
+
+                echo
+                echo "--- $FILE ---"
+
+                grep -n \
+                  "#include <filesystem>\|std::filesystem" \
+                  "$FILE" \
+                  || true
+
+              fi
+
+            fi
+
+          done
+
+      # ==========================================
+      # 9. Check libnbtplusplus
       # ==========================================
       - name: Check libnbtplusplus
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -230,7 +302,7 @@ jobs:
               done
 
       # ==========================================
-      # 9. Force top-level C++17
+      # 10. Force top-level C++17
       # ==========================================
       - name: Configure C++17
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -263,7 +335,7 @@ jobs:
             || true
 
       # ==========================================
-      # 10. Force libbedrock-viz target to C++17
+      # 11. Force libbedrock-viz target to C++17
       # ==========================================
       - name: Force libbedrock-viz C++17
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -297,7 +369,7 @@ jobs:
           tail -20 CMakeLists.txt
 
       # ==========================================
-      # 11. Configure build
+      # 12. Configure build
       # ==========================================
       - name: Configure build
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -320,7 +392,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
 
       # ==========================================
-      # 12. Verify compiler settings
+      # 13. Verify compiler settings
       # ==========================================
       - name: Verify compiler settings
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -370,8 +442,24 @@ jobs:
 
           fi
 
+          echo
+          echo "=== logger.cc compile command ==="
+
+          if [ -f build/compile_commands.json ]; then
+
+            grep \
+              '"src/logger.cc"' \
+              build/compile_commands.json \
+              || true
+
+          else
+
+            echo "compile_commands.json was not generated."
+
+          fi
+
       # ==========================================
-      # 13. Build bedrock-viz
+      # 14. Build bedrock-viz
       # ==========================================
       - name: Build bedrock-viz
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -397,7 +485,7 @@ jobs:
             -print
 
       # ==========================================
-      # 14. Locate LevelDB files
+      # 15. Locate LevelDB files
       # ==========================================
       - name: Locate LevelDB files
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -445,7 +533,7 @@ jobs:
             >> "$GITHUB_ENV"
 
       # ==========================================
-      # 15. Build LevelDB inspection tool
+      # 16. Build LevelDB inspection tool
       # ==========================================
       - name: Build LevelDB inspection tool
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -455,19 +543,6 @@ jobs:
           echo "=========================================="
           echo " Building LevelDB inspection tool"
           echo "=========================================="
-
-          echo "=== LevelDB header ==="
-
-          echo \
-            "${LEVELDB_INCLUDE}/leveldb/db.h"
-
-          echo "=== LevelDB include directory ==="
-
-          echo "$LEVELDB_INCLUDE"
-
-          echo "=== LevelDB library ==="
-
-          echo "$LEVELDB_LIBRARY"
 
           cat > /tmp/inspect_leveldb.cpp <<'EOF'
           #include <iostream>
@@ -820,7 +895,7 @@ jobs:
           echo "Inspection tool built successfully."
 
       # ==========================================
-      # 16. Inspect actual LevelDB records
+      # 17. Inspect actual LevelDB records
       # ==========================================
       - name: Inspect actual LevelDB records
         run: |
@@ -842,7 +917,7 @@ jobs:
             "$WORLD_DIR/db"
 
       # ==========================================
-      # 17. Install bedrock-viz
+      # 18. Install bedrock-viz
       # ==========================================
       - name: Install bedrock-viz
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -862,7 +937,7 @@ jobs:
             /usr/local/share/bedrock-viz/data/bedrock_viz.xml
 
       # ==========================================
-      # 18. Verify bedrock-viz installation
+      # 19. Verify bedrock-viz installation
       # ==========================================
       - name: Verify bedrock-viz installation
         run: |
@@ -893,7 +968,7 @@ jobs:
           echo "bedrock-viz installation OK."
 
       # ==========================================
-      # 19. Generate map
+      # 20. Generate map
       # ==========================================
       - name: Generate map
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -934,7 +1009,7 @@ jobs:
             --html-most
 
       # ==========================================
-      # 20. Check generated map
+      # 21. Check generated map
       # ==========================================
       - name: Check generated map
         run: |
@@ -976,7 +1051,7 @@ jobs:
           fi
 
       # ==========================================
-      # 21. Upload map artifact
+      # 22. Upload map artifact
       # ==========================================
       - name: Upload map artifact
         uses: actions/upload-artifact@v4
