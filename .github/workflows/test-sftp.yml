@@ -58,7 +58,8 @@ jobs:
               bye
             "
 
-          ls -lh "$GITHUB_WORKSPACE/world_archive/world.tar.gz"
+          ls -lh \
+            "$GITHUB_WORKSPACE/world_archive/world.tar.gz"
 
       # ==========================================
       # 3. Extract world
@@ -177,7 +178,7 @@ jobs:
             || true
 
       # ==========================================
-      # 7. Fix zlib compressor include
+      # 7. Fix zlib compressor
       # ==========================================
       - name: Fix zlib compressor include
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -199,18 +200,21 @@ jobs:
           head -20 "$FILE"
 
       # ==========================================
-      # 8. Fix filesystem includes
+      # 8. Force filesystem include
       # ==========================================
-      - name: Fix filesystem includes
+      - name: Force filesystem includes
         working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
 
           echo "=========================================="
-          echo " Fixing filesystem includes"
+          echo " Forcing filesystem includes"
           echo "=========================================="
 
-          FILES="\
+          echo
+          echo "=== Explicit target files ==="
+
+          FILES="
           include/asset.h
           include/control.h
           src/asset.cc
@@ -221,69 +225,34 @@ jobs:
           for FILE in $FILES; do
 
             if [ ! -f "$FILE" ]; then
-              echo "Skipping missing file: $FILE"
+              echo "Missing: $FILE"
               continue
             fi
 
-            if grep -q "std::filesystem" "$FILE"; then
+            echo "Processing: $FILE"
 
-              if ! grep -q "#include <filesystem>" "$FILE"; then
+            if grep -q '#include <filesystem>' "$FILE"; then
 
-                echo "Adding <filesystem> to $FILE"
-
-                sed -i '1i#include <filesystem>' "$FILE"
-
-              else
-
-                echo "<filesystem> already exists in $FILE"
-
-              fi
+              echo "  <filesystem> already exists."
 
             else
 
-              echo "No std::filesystem usage in $FILE"
+              echo "  Adding <filesystem>."
+
+              sed -i \
+                '1i#include <filesystem>' \
+                "$FILE"
 
             fi
 
           done
 
           echo
-          echo "=== Filesystem include verification ==="
+          echo "=== Search all filesystem users ==="
 
-          for FILE in $FILES; do
-
-            if [ -f "$FILE" ]; then
-
-              if grep -q "std::filesystem" "$FILE"; then
-
-                echo
-                echo "--- $FILE ---"
-
-                grep -n \
-                  "#include <filesystem>\|std::filesystem" \
-                  "$FILE" \
-                  || true
-
-              fi
-
-            fi
-
-          done
-
-      # ==========================================
-      # 9. Check libnbtplusplus
-      # ==========================================
-      - name: Check libnbtplusplus
-        working-directory: ${{ github.workspace }}/bedrock-viz
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo " Checking libnbtplusplus"
-          echo "=========================================="
-
-          find . \
-            -path '*libnbtplusplus*' \
+          find \
+            include \
+            src \
             -type f \
             \( \
               -name '*.h' \
@@ -292,17 +261,71 @@ jobs:
               -o -name '*.cpp' \
             \) \
             -print0 \
-            | xargs -0 grep -l \
-              'std::filesystem\|std::make_unique' \
-            2>/dev/null \
-            | while read -r FILE; do
+            | while IFS= read -r -d '' FILE; do
 
-                echo "C++17 file: $FILE"
+                if grep -q 'std::filesystem' "$FILE"; then
+
+                  echo
+                  echo "Found filesystem usage:"
+                  echo "$FILE"
+
+                  if ! grep -q '#include <filesystem>' "$FILE"; then
+
+                    echo "  Adding missing <filesystem>."
+
+                    sed -i \
+                      '1i#include <filesystem>' \
+                      "$FILE"
+
+                  else
+
+                    echo "  <filesystem> present."
+
+                  fi
+
+                fi
 
               done
 
+          echo
+          echo "=== Final filesystem include check ==="
+
+          grep -R \
+            -n \
+            '#include <filesystem>' \
+            include \
+            src \
+            || true
+
       # ==========================================
-      # 10. Force top-level C++17
+      # 9. Show control.h
+      # ==========================================
+      - name: Verify control.h
+        working-directory: ${{ github.workspace }}/bedrock-viz
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo " Verifying control.h"
+          echo "=========================================="
+
+          echo
+          echo "=== First 100 lines of control.h ==="
+
+          nl -ba \
+            include/control.h \
+            | head -100
+
+          echo
+          echo "=== Filesystem references ==="
+
+          grep -n \
+            'filesystem' \
+            include/control.h \
+            || true
+
+      # ==========================================
+      # 10. Configure C++17
       # ==========================================
       - name: Configure C++17
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -335,7 +358,7 @@ jobs:
             || true
 
       # ==========================================
-      # 11. Force libbedrock-viz target to C++17
+      # 11. Force libbedrock-viz C++17
       # ==========================================
       - name: Force libbedrock-viz C++17
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -364,7 +387,7 @@ jobs:
 
           fi
 
-          echo "=== Added C++17 target configuration ==="
+          echo "=== CMakeLists.txt tail ==="
 
           tail -20 CMakeLists.txt
 
@@ -392,7 +415,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
 
       # ==========================================
-      # 13. Verify compiler settings
+      # 13. Verify compile commands
       # ==========================================
       - name: Verify compiler settings
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -403,6 +426,7 @@ jobs:
           echo " Compiler settings"
           echo "=========================================="
 
+          echo
           echo "=== CMake cache ==="
 
           grep \
@@ -411,52 +435,28 @@ jobs:
             || true
 
           echo
-          echo "=== asset.cc compile command ==="
+          echo "=== asset.cc ==="
 
-          if [ -f build/compile_commands.json ]; then
-
-            grep \
-              '"src/asset.cc"' \
-              build/compile_commands.json \
-              || true
-
-          else
-
-            echo "compile_commands.json was not generated."
-
-          fi
+          grep \
+            '"src/asset.cc"' \
+            build/compile_commands.json \
+            || true
 
           echo
-          echo "=== control.cc compile command ==="
+          echo "=== control.cc ==="
 
-          if [ -f build/compile_commands.json ]; then
-
-            grep \
-              '"src/control.cc"' \
-              build/compile_commands.json \
-              || true
-
-          else
-
-            echo "compile_commands.json was not generated."
-
-          fi
+          grep \
+            '"src/control.cc"' \
+            build/compile_commands.json \
+            || true
 
           echo
-          echo "=== logger.cc compile command ==="
+          echo "=== logger.cc ==="
 
-          if [ -f build/compile_commands.json ]; then
-
-            grep \
-              '"src/logger.cc"' \
-              build/compile_commands.json \
-              || true
-
-          else
-
-            echo "compile_commands.json was not generated."
-
-          fi
+          grep \
+            '"src/logger.cc"' \
+            build/compile_commands.json \
+            || true
 
       # ==========================================
       # 14. Build bedrock-viz
@@ -880,8 +880,6 @@ jobs:
           }
           EOF
 
-          echo "=== Compiling inspection tool ==="
-
           g++ \
             -std=c++17 \
             -O2 \
@@ -895,18 +893,15 @@ jobs:
           echo "Inspection tool built successfully."
 
       # ==========================================
-      # 17. Inspect actual LevelDB records
+      # 17. Inspect actual LevelDB
       # ==========================================
-      - name: Inspect actual LevelDB records
+      - name: Inspect actual LevelDB
         run: |
           set -e
 
           echo "=========================================="
           echo " Inspecting actual LevelDB"
           echo "=========================================="
-
-          echo "World DB:"
-          echo "$WORLD_DIR/db"
 
           if [ ! -d "$WORLD_DIR/db" ]; then
             echo "ERROR: World DB directory does not exist."
@@ -937,7 +932,7 @@ jobs:
             /usr/local/share/bedrock-viz/data/bedrock_viz.xml
 
       # ==========================================
-      # 19. Verify bedrock-viz installation
+      # 19. Verify installation
       # ==========================================
       - name: Verify bedrock-viz installation
         run: |
