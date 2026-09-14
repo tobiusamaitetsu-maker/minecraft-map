@@ -200,55 +200,16 @@ jobs:
           head -20 "$FILE"
 
       # ==========================================
-      # 8. Force filesystem include
+      # 8. Fix filesystem includes
       # ==========================================
-      - name: Force filesystem includes
+      - name: Fix filesystem includes
         working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
 
           echo "=========================================="
-          echo " Forcing filesystem includes"
+          echo " Fixing filesystem includes"
           echo "=========================================="
-
-          echo
-          echo "=== Explicit target files ==="
-
-          FILES="
-          include/asset.h
-          include/control.h
-          src/asset.cc
-          src/control.cc
-          src/logger.cc
-          "
-
-          for FILE in $FILES; do
-
-            if [ ! -f "$FILE" ]; then
-              echo "Missing: $FILE"
-              continue
-            fi
-
-            echo "Processing: $FILE"
-
-            if grep -q '#include <filesystem>' "$FILE"; then
-
-              echo "  <filesystem> already exists."
-
-            else
-
-              echo "  Adding <filesystem>."
-
-              sed -i \
-                '1i#include <filesystem>' \
-                "$FILE"
-
-            fi
-
-          done
-
-          echo
-          echo "=== Search all filesystem users ==="
 
           find \
             include \
@@ -265,13 +226,11 @@ jobs:
 
                 if grep -q 'std::filesystem' "$FILE"; then
 
-                  echo
-                  echo "Found filesystem usage:"
-                  echo "$FILE"
+                  echo "Checking: $FILE"
 
                   if ! grep -q '#include <filesystem>' "$FILE"; then
 
-                    echo "  Adding missing <filesystem>."
+                    echo "  Adding <filesystem>"
 
                     sed -i \
                       '1i#include <filesystem>' \
@@ -279,7 +238,7 @@ jobs:
 
                   else
 
-                    echo "  <filesystem> present."
+                    echo "  <filesystem> already present"
 
                   fi
 
@@ -288,7 +247,7 @@ jobs:
               done
 
           echo
-          echo "=== Final filesystem include check ==="
+          echo "=== Filesystem includes ==="
 
           grep -R \
             -n \
@@ -298,101 +257,55 @@ jobs:
             || true
 
       # ==========================================
-      # 9. Show control.h
+      # 9. Force C++17 in CMakeLists
       # ==========================================
-      - name: Verify control.h
+      - name: Force C++17
         working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
 
           echo "=========================================="
-          echo " Verifying control.h"
+          echo " Forcing C++17"
           echo "=========================================="
 
-          echo
-          echo "=== First 100 lines of control.h ==="
+          cat >> CMakeLists.txt <<'EOF'
 
-          nl -ba \
-            include/control.h \
-            | head -100
+          # ==========================================
+          # GitHub Actions: force C++17
+          # ==========================================
 
-          echo
-          echo "=== Filesystem references ==="
+          set(CMAKE_CXX_STANDARD 17 CACHE STRING
+              "C++ standard" FORCE)
 
-          grep -n \
-            'filesystem' \
-            include/control.h \
-            || true
+          set(CMAKE_CXX_STANDARD_REQUIRED ON CACHE BOOL
+              "Require C++ standard" FORCE)
 
-      # ==========================================
-      # 10. Configure C++17
-      # ==========================================
-      - name: Configure C++17
-        working-directory: ${{ github.workspace }}/bedrock-viz
-        run: |
-          set -e
+          set(CMAKE_CXX_EXTENSIONS OFF CACHE BOOL
+              "Disable compiler extensions" FORCE)
 
-          echo "=========================================="
-          echo " Configuring C++17"
-          echo "=========================================="
-
-          if grep -q "CMAKE_CXX_STANDARD" CMakeLists.txt; then
-
-            sed -i \
-              's/set(CMAKE_CXX_STANDARD [0-9][0-9]*)/set(CMAKE_CXX_STANDARD 17)/' \
-              CMakeLists.txt
-
-          else
-
-            sed -i \
-              '1i set(CMAKE_CXX_STANDARD 17)' \
-              CMakeLists.txt
-
-          fi
-
-          echo "=== CMake C++ standard ==="
-
-          grep -n \
-            "CMAKE_CXX_STANDARD" \
-            CMakeLists.txt \
-            || true
-
-      # ==========================================
-      # 11. Force libbedrock-viz C++17
-      # ==========================================
-      - name: Force libbedrock-viz C++17
-        working-directory: ${{ github.workspace }}/bedrock-viz
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo " Forcing libbedrock-viz to C++17"
-          echo "=========================================="
-
-          if grep -q \
-            "target_compile_features(libbedrock-viz" \
-            CMakeLists.txt; then
-
-            echo "C++17 target setting already exists."
-
-          else
-
-            cat >> CMakeLists.txt <<'EOF'
-
-          # Force C++17 for libbedrock-viz.
           if(TARGET libbedrock-viz)
-              target_compile_features(libbedrock-viz PUBLIC cxx_std_17)
+
+              target_compile_features(
+                  libbedrock-viz
+                  PUBLIC
+                  cxx_std_17
+              )
+
+              target_compile_options(
+                  libbedrock-viz
+                  PRIVATE
+                  -std=c++17
+              )
+
           endif()
           EOF
 
-          fi
-
           echo "=== CMakeLists.txt tail ==="
 
-          tail -20 CMakeLists.txt
+          tail -40 CMakeLists.txt
 
       # ==========================================
-      # 12. Configure build
+      # 10. Configure CMake
       # ==========================================
       - name: Configure build
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -400,7 +313,7 @@ jobs:
           set -e
 
           echo "=========================================="
-          echo " Configuring build"
+          echo " Configuring CMake"
           echo "=========================================="
 
           rm -rf build
@@ -411,19 +324,20 @@ jobs:
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
             -DCMAKE_CXX_EXTENSIONS=OFF \
+            -DCMAKE_CXX_FLAGS="-std=c++17" \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_BUILD_TYPE=Release
 
       # ==========================================
-      # 13. Verify compile commands
+      # 11. Verify C++17 compile commands
       # ==========================================
-      - name: Verify compiler settings
+      - name: Verify C++17
         working-directory: ${{ github.workspace }}/bedrock-viz
         run: |
           set -e
 
           echo "=========================================="
-          echo " Compiler settings"
+          echo " Verifying C++17"
           echo "=========================================="
 
           echo
@@ -435,7 +349,7 @@ jobs:
             || true
 
           echo
-          echo "=== asset.cc ==="
+          echo "=== asset.cc compile command ==="
 
           grep \
             '"src/asset.cc"' \
@@ -443,7 +357,7 @@ jobs:
             || true
 
           echo
-          echo "=== control.cc ==="
+          echo "=== control.cc compile command ==="
 
           grep \
             '"src/control.cc"' \
@@ -451,15 +365,32 @@ jobs:
             || true
 
           echo
-          echo "=== logger.cc ==="
+          echo "=== logger.cc compile command ==="
 
           grep \
             '"src/logger.cc"' \
             build/compile_commands.json \
             || true
 
+          echo
+          echo "=== Checking for C++11-only compile flags ==="
+
+          if grep \
+            -E -- \
+            '-std=c\+\+11|-std=gnu\+\+11' \
+            build/compile_commands.json; then
+
+            echo
+            echo "WARNING: C++11 flag detected."
+
+          else
+
+            echo "No C++11 compile flag detected."
+
+          fi
+
       # ==========================================
-      # 14. Build bedrock-viz
+      # 12. Build bedrock-viz
       # ==========================================
       - name: Build bedrock-viz
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -475,7 +406,10 @@ jobs:
             --config Release \
             --parallel "$(nproc)"
 
-          echo "=== Built files ==="
+          echo
+          echo "=========================================="
+          echo " bedrock-viz build completed"
+          echo "=========================================="
 
           find \
             build \
@@ -485,7 +419,7 @@ jobs:
             -print
 
       # ==========================================
-      # 15. Locate LevelDB files
+      # 13. Locate LevelDB files
       # ==========================================
       - name: Locate LevelDB files
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -533,7 +467,7 @@ jobs:
             >> "$GITHUB_ENV"
 
       # ==========================================
-      # 16. Build LevelDB inspection tool
+      # 14. Build LevelDB inspection tool
       # ==========================================
       - name: Build LevelDB inspection tool
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -893,7 +827,7 @@ jobs:
           echo "Inspection tool built successfully."
 
       # ==========================================
-      # 17. Inspect actual LevelDB
+      # 15. Inspect actual LevelDB
       # ==========================================
       - name: Inspect actual LevelDB
         run: |
@@ -912,7 +846,7 @@ jobs:
             "$WORLD_DIR/db"
 
       # ==========================================
-      # 18. Install bedrock-viz
+      # 16. Install bedrock-viz
       # ==========================================
       - name: Install bedrock-viz
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -932,7 +866,7 @@ jobs:
             /usr/local/share/bedrock-viz/data/bedrock_viz.xml
 
       # ==========================================
-      # 19. Verify installation
+      # 17. Verify installation
       # ==========================================
       - name: Verify bedrock-viz installation
         run: |
@@ -963,7 +897,7 @@ jobs:
           echo "bedrock-viz installation OK."
 
       # ==========================================
-      # 20. Generate map
+      # 18. Generate map
       # ==========================================
       - name: Generate map
         working-directory: ${{ github.workspace }}/bedrock-viz
@@ -1004,7 +938,7 @@ jobs:
             --html-most
 
       # ==========================================
-      # 21. Check generated map
+      # 19. Check generated map
       # ==========================================
       - name: Check generated map
         run: |
@@ -1046,7 +980,7 @@ jobs:
           fi
 
       # ==========================================
-      # 22. Upload map artifact
+      # 20. Upload map artifact
       # ==========================================
       - name: Upload map artifact
         uses: actions/upload-artifact@v4
