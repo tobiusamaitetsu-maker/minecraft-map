@@ -1,29 +1,41 @@
-name: Generate Minecraft Map
+name: Build bedrock-viz
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-map:
+  build:
     runs-on: ubuntu-latest
 
     steps:
+      # ============================================================
+      # 1. Checkout
+      # ============================================================
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ============================================================
+      # 2. Install dependencies
+      # ============================================================
       - name: Install dependencies
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
             build-essential \
             cmake \
             git \
             wget \
             tar \
+            openssh-client \
+            sshpass \
             libboost-all-dev \
             libpng-dev \
             zlib1g-dev
 
+      # ============================================================
+      # 3. Download Minecraft world from RingoNetworks
+      # ============================================================
       - name: Download world
         env:
           RINGO_SFTP_HOST: ${{ secrets.RINGO_SFTP_HOST }}
@@ -31,40 +43,88 @@ jobs:
           RINGO_SFTP_USER: ${{ secrets.RINGO_SFTP_USER }}
           RINGO_SFTP_PASSWORD: ${{ secrets.RINGO_SFTP_PASSWORD }}
         run: |
-          sudo apt-get install -y sshpass
-
           mkdir -p world_archive
+
           cd world_archive
 
           sshpass -p "$RINGO_SFTP_PASSWORD" \
-            sftp -o StrictHostKeyChecking=no \
-            -P "$RINGO_SFTP_PORT" \
-            "$RINGO_SFTP_USER@$RINGO_SFTP_HOST" <<EOF
+            sftp \
+              -o StrictHostKeyChecking=no \
+              -o BatchMode=no \
+              -P "$RINGO_SFTP_PORT" \
+              "$RINGO_SFTP_USER@$RINGO_SFTP_HOST" <<EOF
           get /worlds/level/archive-2026-09-10T185240+0900.tar.gz world.tar.gz
           bye
           EOF
 
+          ls -lh world.tar.gz
+
+      # ============================================================
+      # 4. Extract world
+      # ============================================================
       - name: Extract world
         run: |
           mkdir -p world
-          tar -xzf world_archive/world.tar.gz -C world
 
-          echo "World files:"
-          find world -maxdepth 3 -type f | head -50
+          tar \
+            -xzf world_archive/world.tar.gz \
+            -C world
 
+          echo "===== World files ====="
+
+          find world \
+            -maxdepth 3 \
+            -type f \
+            | head -50
+
+          echo "===== Check level.dat ====="
+
+          find world \
+            -name level.dat \
+            -print
+
+          echo "===== Check db directory ====="
+
+          find world \
+            -type d \
+            -name db \
+            -print
+
+      # ============================================================
+      # 5. Clone official bedrock-viz repository
+      # ============================================================
       - name: Clone bedrock-viz
         run: |
-          git clone --recursive \
+          git clone \
+            --recursive \
             https://github.com/paulgrahek/bedrock-viz.git \
             bedrock-viz
 
-      - name: Apply patches
+          cd bedrock-viz
+
+          echo "===== bedrock-viz commit ====="
+          git rev-parse HEAD
+
+          echo "===== repository status ====="
+          git status
+
+      # ============================================================
+      # 6. Apply official LevelDB compatibility patches
+      # ============================================================
+      - name: Apply bedrock-viz patches
         working-directory: bedrock-viz
         run: |
           git apply -p0 patches/leveldb-1.22.patch
+
           git apply -p0 patches/pugixml-disable-install.patch
 
-      - name: Fix zlib include
+      # ============================================================
+      # 7. Fix LevelDB zlib include
+      #
+      # This is the only source-code modification retained.
+      # The Ubuntu compiler requires <cstdint> for uint32_t.
+      # ============================================================
+      - name: Fix LevelDB zlib include
         working-directory: bedrock-viz
         run: |
           FILE="third_party/leveldb/table/compressor/zlib_compressor.cc"
@@ -73,26 +133,47 @@ jobs:
             sed -i '1i#include <cstdint>' "$FILE"
           fi
 
+          echo "===== zlib_compressor.cc header ====="
+          head -20 "$FILE"
+
+      # ============================================================
+      # 8. Verify compiler
+      # ============================================================
       - name: Check compiler
         run: |
+          echo "===== GCC ====="
           g++ --version
+
+          echo "===== CMake ====="
           cmake --version
 
-          echo "Testing C++17..."
+          echo "===== C++17 filesystem test ====="
 
-          cat > /tmp/test.cpp <<'EOF'
+          cat > /tmp/test_filesystem.cpp <<'EOF'
           #include <filesystem>
-          int main() {
+
+          int main()
+          {
               std::filesystem::path p = ".";
               return 0;
           }
           EOF
 
-          g++ -std=c++17 /tmp/test.cpp -o /tmp/test
+          g++ \
+            -std=c++17 \
+            /tmp/test_filesystem.cpp \
+            -o /tmp/test_filesystem
 
-          echo "C++17 filesystem test: OK"
+          echo "C++17 filesystem: OK"
 
-      - name: Configure
+      # ============================================================
+      # 9. Configure bedrock-viz
+      #
+      # Do NOT modify CMakeLists.txt.
+      # Do NOT force additional C++ flags.
+      # Use the project's own CMake configuration.
+      # ============================================================
+      - name: Configure CMake
         working-directory: bedrock-viz
         run: |
           rm -rf build
@@ -101,13 +182,12 @@ jobs:
             -S . \
             -B build \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_STANDARD=17 \
-            -DCMAKE_CXX_STANDARD_REQUIRED=ON \
-            -DCMAKE_CXX_EXTENSIONS=OFF \
-            -DCMAKE_CXX_FLAGS="-std=c++17" \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-      - name: Check logger compile command
+      # ============================================================
+      # 10. Display actual compiler settings
+      # ============================================================
+      - name: Inspect compile commands
         working-directory: bedrock-viz
         run: |
           echo "===== logger.cc compile command ====="
@@ -115,20 +195,107 @@ jobs:
           python3 - <<'PY'
           import json
 
-          with open("build/compile_commands.json") as f:
-              data = json.load(f)
+          with open("build/compile_commands.json", "r") as f:
+              commands = json.load(f)
 
-          for item in data:
+          for item in commands:
               if item["file"].endswith("/src/logger.cc"):
+                  print(item["command"])
+                  print()
+          PY
+
+          echo "===== asset.cc compile command ====="
+
+          python3 - <<'PY'
+          import json
+
+          with open("build/compile_commands.json", "r") as f:
+              commands = json.load(f)
+
+          for item in commands:
+              if item["file"].endswith("/src/asset.cc"):
                   print(item["command"])
                   print()
           PY
 
           echo "===== C++ standard flags ====="
 
-          grep -o -- '-std=[^ ]*' build/compile_commands.json | sort | uniq -c || true
+          grep \
+            -o -- '-std=[^ ]*' \
+            build/compile_commands.json \
+            | sort \
+            | uniq -c \
+            || true
 
-      - name: Build
+      # ============================================================
+      # 11. Build bedrock-viz
+      # ============================================================
+      - name: Build bedrock-viz
         working-directory: bedrock-viz
         run: |
-          cmake --build build --parallel 2
+          cmake \
+            --build build \
+            --parallel 2
+
+      # ============================================================
+      # 12. Verify build
+      # ============================================================
+      - name: Verify build
+        working-directory: bedrock-viz
+        run: |
+          echo "===== Build directory ====="
+          find build \
+            -maxdepth 3 \
+            -type f \
+            | sort \
+            | head -100
+
+          echo "===== bedrock-viz executable ====="
+
+          find build \
+            -type f \
+            -name "bedrock-viz" \
+            -print
+
+      # ============================================================
+      # 13. Install bedrock-viz
+      # ============================================================
+      - name: Install bedrock-viz
+        working-directory: bedrock-viz
+        run: |
+          sudo cmake --install build
+
+      # ============================================================
+      # 14. Verify installation
+      # ============================================================
+      - name: Verify installation
+        run: |
+          echo "===== Installed executable ====="
+
+          which bedrock-viz || true
+
+          echo "===== Installed files ====="
+
+          ls -la \
+            /usr/local/share/bedrock-viz/ \
+            || true
+
+          echo "===== Installed data ====="
+
+          ls -la \
+            /usr/local/share/bedrock-viz/data/ \
+            || true
+
+          echo "===== Installed static ====="
+
+          ls -la \
+            /usr/local/share/bedrock-viz/static/ \
+            | head -50 \
+            || true
+
+      # ============================================================
+      # 15. Test bedrock-viz executable
+      # ============================================================
+      - name: Test bedrock-viz
+        run: |
+          bedrock-viz --help
