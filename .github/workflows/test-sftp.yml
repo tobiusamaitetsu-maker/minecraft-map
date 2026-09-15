@@ -85,7 +85,7 @@ jobs:
             sed -i '1i#include <cstdint>' "$FILE"
           fi
 
-      - name: Add C++17 settings to libbedrock-viz only
+      - name: Add C++17 settings
         working-directory: bedrock-viz
         run: |
           python3 - <<'PY'
@@ -103,64 +103,39 @@ jobs:
           set_property(TARGET ${LIB_NAME} PROPERTY CXX_EXTENSIONS OFF)
           target_compile_features(${LIB_NAME} PRIVATE cxx_std_17)'''
 
-          if marker not in text:
-              raise SystemExit(
-                  "CMakeLists.txt: 対象の add_library() が見つかりません"
-              )
-
           if "target_compile_features(${LIB_NAME} PRIVATE cxx_std_17)" in text:
-              print("C++17設定は既に追加されています")
+              print("C++17設定は既に存在します")
           else:
+              if marker not in text:
+                  raise SystemExit(
+                      "CMakeLists.txt: add_library() が見つかりません"
+                  )
+
               text = text.replace(marker, addition, 1)
               path.write_text(text)
-              print("C++17設定を1か所だけ追加しました")
+
+              print("C++17設定を追加しました")
 
           PY
 
-          echo "===== CMake変更箇所 ====="
+          echo "===== CMake C++17 settings ====="
 
           grep -A8 -B2 \
             'add_library(${LIB_NAME}' \
             CMakeLists.txt
 
-      - name: Remove forced C++11 flag
-        working-directory: bedrock-viz
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("CMakeLists.txt")
-          text = path.read_text()
-
-          old = 'set(CMAKE_CXX_STANDARD 17)'
-
-          new = '''set(CMAKE_CXX_STANDARD 17)
-
-          # Remove any externally injected C++11 standard flag.
-          string(REGEX REPLACE "(^| )-std=c\\+\\+11( |$)" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-          string(REGEX REPLACE "(^| )-std=gnu\\+\\+11( |$)" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")'''
-
-          if old not in text:
-              raise SystemExit(
-                  "CMakeLists.txt: CMAKE_CXX_STANDARD 17 が見つかりません"
-              )
-
-          if "Remove any externally injected C++11 standard flag." in text:
-              print("C++11除去設定は既に追加されています")
-          else:
-              text = text.replace(old, new, 1)
-              path.write_text(text)
-              print("C++11除去設定を追加しました")
-
-          PY
-
-          echo "===== CMAKE_CXX_FLAGS ====="
-          grep -n "CMAKE_CXX_FLAGS" CMakeLists.txt || true
-
       - name: Configure CMake
         working-directory: bedrock-viz
         run: |
           rm -rf build
+
+          echo "===== Environment CXXFLAGS ====="
+          echo "CXXFLAGS=${CXXFLAGS:-<empty>}"
+
+          echo "===== Configure ====="
+
+          unset CXXFLAGS
+          unset CFLAGS
 
           cmake \
             -S . \
@@ -169,6 +144,7 @@ jobs:
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
             -DCMAKE_CXX_EXTENSIONS=OFF \
+            -DCMAKE_CXX_FLAGS="" \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       - name: Inspect asset compile command
@@ -194,22 +170,24 @@ jobs:
 
                   if "-std=c++11" in command:
                       raise SystemExit(
-                          "asset.cc に -std=c++11 が残っています"
+                          "ERROR: asset.cc に -std=c++11 が残っています"
                       )
 
                   if "-std=gnu++11" in command:
                       raise SystemExit(
-                          "asset.cc に -std=gnu++11 が残っています"
+                          "ERROR: asset.cc に -std=gnu++11 が残っています"
                       )
 
                   if "-std=c++17" not in command:
                       raise SystemExit(
-                          "asset.cc がC++17でコンパイルされていません"
+                          "ERROR: asset.cc がC++17でコンパイルされていません"
                       )
+
+                  print("C++17設定: OK")
 
           if not found:
               raise SystemExit(
-                  "asset.cc のコンパイルコマンドが見つかりません"
+                  "ERROR: asset.cc のコンパイルコマンドが見つかりません"
               )
           PY
 
@@ -225,7 +203,11 @@ jobs:
 
       - name: Verify installation
         run: |
+          echo "===== bedrock-viz ====="
           which bedrock-viz
+
+          echo "===== data ====="
+          ls -la /usr/local/share/bedrock-viz/data/
 
           test -f \
             /usr/local/share/bedrock-viz/data/bedrock_viz.xml
