@@ -85,21 +85,6 @@ jobs:
             sed -i '1i#include <cstdint>' "$FILE"
           fi
 
-      - name: Fix asset filesystem include
-        working-directory: bedrock-viz
-        run: |
-          FILE="include/asset.h"
-
-          if ! grep -q '#include <filesystem>' "$FILE"; then
-            sed -i '1i#include <filesystem>' "$FILE"
-            echo "Added <filesystem> to include/asset.h"
-          else
-            echo "<filesystem> is already included in include/asset.h"
-          fi
-
-          echo "===== asset.h ====="
-          sed -n '1,20p' "$FILE"
-
       - name: Add C++17 settings to libbedrock-viz only
         working-directory: bedrock-viz
         run: |
@@ -138,6 +123,40 @@ jobs:
             'add_library(${LIB_NAME}' \
             CMakeLists.txt
 
+      - name: Remove forced C++11 flag
+        working-directory: bedrock-viz
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("CMakeLists.txt")
+          text = path.read_text()
+
+          old = 'set(CMAKE_CXX_STANDARD 17)'
+
+          new = '''set(CMAKE_CXX_STANDARD 17)
+
+          # Remove any externally injected C++11 standard flag.
+          string(REGEX REPLACE "(^| )-std=c\\+\\+11( |$)" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+          string(REGEX REPLACE "(^| )-std=gnu\\+\\+11( |$)" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")'''
+
+          if old not in text:
+              raise SystemExit(
+                  "CMakeLists.txt: CMAKE_CXX_STANDARD 17 が見つかりません"
+              )
+
+          if "Remove any externally injected C++11 standard flag." in text:
+              print("C++11除去設定は既に追加されています")
+          else:
+              text = text.replace(old, new, 1)
+              path.write_text(text)
+              print("C++11除去設定を追加しました")
+
+          PY
+
+          echo "===== CMAKE_CXX_FLAGS ====="
+          grep -n "CMAKE_CXX_FLAGS" CMakeLists.txt || true
+
       - name: Configure CMake
         working-directory: bedrock-viz
         run: |
@@ -171,7 +190,19 @@ jobs:
                   print(item["command"])
                   print()
 
-                  if "-std=c++17" not in item["command"]:
+                  command = item["command"]
+
+                  if "-std=c++11" in command:
+                      raise SystemExit(
+                          "asset.cc に -std=c++11 が残っています"
+                      )
+
+                  if "-std=gnu++11" in command:
+                      raise SystemExit(
+                          "asset.cc に -std=gnu++11 が残っています"
+                      )
+
+                  if "-std=c++17" not in command:
                       raise SystemExit(
                           "asset.cc がC++17でコンパイルされていません"
                       )
