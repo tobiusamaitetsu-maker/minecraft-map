@@ -85,6 +85,21 @@ jobs:
             sed -i '1i#include <cstdint>' "$FILE"
           fi
 
+      - name: Fix asset filesystem include
+        working-directory: bedrock-viz
+        run: |
+          FILE="include/asset.h"
+
+          if ! grep -q '#include <filesystem>' "$FILE"; then
+            sed -i '1i#include <filesystem>' "$FILE"
+            echo "Added <filesystem> to include/asset.h"
+          else
+            echo "<filesystem> is already included in include/asset.h"
+          fi
+
+          echo "===== asset.h ====="
+          sed -n '1,20p' "$FILE"
+
       - name: Add C++17 settings to libbedrock-viz only
         working-directory: bedrock-viz
         run: |
@@ -117,7 +132,7 @@ jobs:
 
           PY
 
-          echo "===== 変更箇所 ====="
+          echo "===== CMake変更箇所 ====="
 
           grep -A8 -B2 \
             'add_library(${LIB_NAME}' \
