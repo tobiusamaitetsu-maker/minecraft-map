@@ -116,23 +116,25 @@ jobs:
 
               print("C++17設定を追加しました")
 
-          PY
+      - name: Find C++11 settings
+        working-directory: bedrock-viz
+        run: |
+          echo "===== Search for C++11 ====="
 
-          echo "===== CMake C++17 settings ====="
-
-          grep -A8 -B2 \
-            'add_library(${LIB_NAME}' \
-            CMakeLists.txt
+          grep -RniE \
+            --exclude-dir=.git \
+            --exclude-dir=build \
+            'c\+\+11|gnu\+\+11|CXX_STANDARD.*11|CMAKE_CXX_STANDARD.*11' \
+            . || true
 
       - name: Configure CMake
         working-directory: bedrock-viz
         run: |
           rm -rf build
 
-          echo "===== Environment CXXFLAGS ====="
+          echo "===== Environment ====="
           echo "CXXFLAGS=${CXXFLAGS:-<empty>}"
-
-          echo "===== Configure ====="
+          echo "CFLAGS=${CFLAGS:-<empty>}"
 
           unset CXXFLAGS
           unset CFLAGS
