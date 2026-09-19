@@ -68,6 +68,7 @@ jobs:
 
           cd bedrock-viz
 
+          echo "===== bedrock-viz commit ====="
           git rev-parse HEAD
 
       - name: Apply patches
@@ -85,7 +86,7 @@ jobs:
             sed -i '1i#include <cstdint>' "$FILE"
           fi
 
-      - name: Add C++17 settings
+      - name: Force C++17
         working-directory: bedrock-viz
         run: |
           python3 - <<'PY'
@@ -94,47 +95,110 @@ jobs:
           path = Path("CMakeLists.txt")
           text = path.read_text()
 
-          marker = 'add_library(${LIB_NAME} STATIC ${SRC_FILES})'
+          # Remove previous experimental modifications if present.
+          lines = text.splitlines()
 
-          addition = '''add_library(${LIB_NAME} STATIC ${SRC_FILES})
+          cleaned = []
+          skip_comment = False
+
+          for line in lines:
+              if "Remove any externally injected C++11 standard flag." in line:
+                  skip_comment = True
+                  continue
+
+              if skip_comment:
+                  if line.strip().startswith("string(REGEX REPLACE"):
+                      continue
+                  skip_comment = False
+
+              if "target_compile_features(${LIB_NAME} PRIVATE cxx_std_17)" in line:
+                  continue
+
+              if "set_property(TARGET ${LIB_NAME} PROPERTY CXX_STANDARD 17)" in line:
+                  continue
+
+              if "set_property(TARGET ${LIB_NAME} PROPERTY CXX_STANDARD_REQUIRED ON)" in line:
+                  continue
+
+              if "set_property(TARGET ${LIB_NAME} PROPERTY CXX_EXTENSIONS OFF)" in line:
+                  continue
+
+              cleaned.append(line)
+
+          text = "\n".join(cleaned) + "\n"
+
+          # Ensure C++17 is the project-wide standard.
+          text = text.replace(
+              "set(CMAKE_CXX_STANDARD 17)",
+              "set(CMAKE_CXX_STANDARD 17)\n"
+              "set(CMAKE_CXX_STANDARD_REQUIRED ON)\n"
+              "set(CMAKE_CXX_EXTENSIONS OFF)",
+              1
+          )
+
+          # Make the main library explicitly C++17.
+          marker = "add_library(${LIB_NAME} STATIC ${SRC_FILES})"
+
+          addition = """add_library(${LIB_NAME} STATIC ${SRC_FILES})
 
           set_property(TARGET ${LIB_NAME} PROPERTY CXX_STANDARD 17)
           set_property(TARGET ${LIB_NAME} PROPERTY CXX_STANDARD_REQUIRED ON)
-          set_property(TARGET ${LIB_NAME} PROPERTY CXX_EXTENSIONS OFF)
-          target_compile_features(${LIB_NAME} PRIVATE cxx_std_17)'''
+          set_property(TARGET ${LIB_NAME} PROPERTY CXX_EXTENSIONS OFF)"""
 
-          if "target_compile_features(${LIB_NAME} PRIVATE cxx_std_17)" in text:
-              print("C++17設定は既に存在します")
-          else:
+          if "set_property(TARGET ${LIB_NAME} PROPERTY CXX_STANDARD 17)" not in text:
               if marker not in text:
                   raise SystemExit(
-                      "CMakeLists.txt: add_library() が見つかりません"
+                      "libbedrock-viz の add_library() が見つかりません"
                   )
 
               text = text.replace(marker, addition, 1)
-              path.write_text(text)
 
-              print("C++17設定を追加しました")
+          path.write_text(text)
 
-      - name: Find C++11 settings
+          print("C++17設定を適用しました")
+          PY
+
+          echo "===== CMakeLists.txt beginning ====="
+          sed -n '1,45p' CMakeLists.txt
+
+      - name: Remove C++11 flags from dependency CMake files
         working-directory: bedrock-viz
         run: |
-          echo "===== Search for C++11 ====="
+          echo "===== Searching C++11 flags ====="
 
           grep -RniE \
             --exclude-dir=.git \
             --exclude-dir=build \
-            'c\+\+11|gnu\+\+11|CXX_STANDARD.*11|CMAKE_CXX_STANDARD.*11' \
+            'std=c\+\+11|std=gnu\+\+11' \
+            . || true
+
+          echo "===== Removing explicit C++11 compiler flags ====="
+
+          find . \
+            -type f \
+            \( -name "CMakeLists.txt" -o -name "*.cmake" \) \
+            -not -path "./.git/*" \
+            -not -path "./build/*" \
+            -print0 |
+          while IFS= read -r -d '' FILE; do
+            sed -i \
+              -e 's/-std=c++11//g' \
+              -e 's/-std=gnu++11//g' \
+              "$FILE"
+          done
+
+          echo "===== Remaining C++11 flags ====="
+
+          grep -RniE \
+            --exclude-dir=.git \
+            --exclude-dir=build \
+            'std=c\+\+11|std=gnu\+\+11' \
             . || true
 
       - name: Configure CMake
         working-directory: bedrock-viz
         run: |
           rm -rf build
-
-          echo "===== Environment ====="
-          echo "CXXFLAGS=${CXXFLAGS:-<empty>}"
-          echo "CFLAGS=${CFLAGS:-<empty>}"
 
           unset CXXFLAGS
           unset CFLAGS
@@ -149,7 +213,7 @@ jobs:
             -DCMAKE_CXX_FLAGS="" \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-      - name: Inspect asset compile command
+      - name: Verify C++ standard
         working-directory: bedrock-viz
         run: |
           python3 - <<'PY'
@@ -185,11 +249,11 @@ jobs:
                           "ERROR: asset.cc がC++17でコンパイルされていません"
                       )
 
-                  print("C++17設定: OK")
+                  print("C++17: OK")
 
           if not found:
               raise SystemExit(
-                  "ERROR: asset.cc のコンパイルコマンドが見つかりません"
+                  "ERROR: asset.cc が見つかりません"
               )
           PY
 
@@ -205,10 +269,10 @@ jobs:
 
       - name: Verify installation
         run: |
-          echo "===== bedrock-viz ====="
+          echo "===== executable ====="
           which bedrock-viz
 
-          echo "===== data ====="
+          echo "===== installed data ====="
           ls -la /usr/local/share/bedrock-viz/data/
 
           test -f \
